@@ -1,0 +1,220 @@
+module sh.sysl.lapack
+@tests
+
+import sysl.math.complex.Complex
+
+// Solving, inverting, the determinant and the condition number. Every oracle is a closed form: a
+// system built from a chosen x, the Hilbert matrix's integer inverse and its determinant 1/6048000,
+// a Vandermonde determinant ∏(xⱼ − xᵢ), a permutation's sign.
+
+// -- solve ----------------------------------------------------------------------------------------
+
+// A = [[2,1,1],[1,3,2],[1,0,0]] and x = (1, 2, 3), so b = A x = (7, 13, 1).
+private hand_system[T: Scalar](tol: real)
+    val a: Mat[T] = from_rows(3, 3, [2.0, 1.0, 1.0, 1.0, 3.0, 2.0, 1.0, 0.0, 0.0])
+    val b: Mat[T] = from_rows(3, 1, [7.0, 13.0, 1.0])
+    val x = ok(solve(a, b), "solve")
+
+    assert_mat(x, from_rows(3, 1, [1.0, 2.0, 3.0]), tol, s"${T.prefix()}gesv x")
+    assert_mat(a, from_rows(3, 3, [2.0, 1.0, 1.0, 1.0, 3.0, 2.0, 1.0, 0.0, 0.0]), 0.0, "solve leaves A alone")
+    assert_mat(b, from_rows(3, 1, [7.0, 13.0, 1.0]), 0.0, "solve leaves b alone")
+
+@test
+solve_answers_a_hand_checked_system_at_every_type() =
+    hand_system[f32](1.0e-5)
+    hand_system[real](1.0e-14)
+    hand_system[Complex[f32]](1.0e-5)
+    hand_system[Complex[real]](1.0e-14)
+
+// A = [[1+i, 2],[3, 4−i]] and x = (1, i): b = (1+3i, 4+4i).
+private complex_system[T: Scalar](tol: real)
+    val a: Mat[T] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 3.0, 0.0, 4.0, -1.0])
+    val b: Mat[T] = from_rows_c(2, 1, [1.0, 3.0, 4.0, 4.0])
+
+    assert_mat(ok(solve(a, b), "solve"), from_rows_c(2, 1, [1.0, 0.0, 0.0, 1.0]), tol, s"${T.prefix()}gesv complex x")
+
+@test
+solve_answers_a_genuinely_complex_system() =
+    complex_system[Complex[f32]](1.0e-5)
+    complex_system[Complex[real]](1.0e-14)
+
+@test
+solve_takes_several_right_hand_sides_and_the_residual_is_small() =
+    val a: Mat[real] = from_rows(4, 4, [4.0, -2.0, 1.0, 3.0, 3.0, 6.0, -4.0, 2.0, 2.0, 1.0, 8.0, -5.0, 1.0, 3.0, 2.0, 9.0])
+    val b: Mat[real] = from_rows(4, 3, [1.0, 0.0, 2.0, 0.0, 1.0, -1.0, 3.0, 2.0, 0.5, -1.0, 4.0, 7.0])
+    val x = ok(solve(a, b), "solve")
+
+    assert_mat(matmul(a, x), b, 1.0e-13, "‖A X − B‖")
+
+@test
+solve_reaches_a_block_of_a_larger_matrix_where_it_lies() =
+    // A 3 × 5 buffer, columns 3 apart; the 2 × 2 block at rows 1–2, columns 1–2 is [[2, 1], [1, 3]].
+    var store: []real = [9.0, 9.0, 9.0, 9.0, 2.0, 1.0, 9.0, 1.0, 3.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0]
+    val block = strided(store[4..], 2, 2, 3)
+    val x = ok(solve(block, vector([3.0, 5.0])), "solve on a block")
+
+    assert_close(x.at(0, 0), 0.8, 1.0e-15, "x0")
+    assert_close(x.at(1, 0), 1.4, 1.0e-15, "x1")
+
+@test
+solve_reports_the_zero_pivot_of_a_singular_matrix() =
+    // getrf pivots row 2 up: U = [[2, 4], [0, 0]], so U(2,2) is the zero.
+    val e = err(solve(from_rows[real](2, 2, [1.0, 2.0, 2.0, 4.0]), vector([1.0, 2.0])), "singular solve")
+
+    assert(e.cause == Singular(2), s"cause: ${e}")
+    assert_eq(e.routine, "dgesv")
+    assert_eq(e.function, "solve")
+    assert_eq(e.info(), 2)
+    assert_eq(e.to_string(), "solve: dgesv: matrix is singular (U(2,2) = 0)")
+
+    val z = err(solve(from_rows_c[Complex[f32]](2, 2, [1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0]), vector([Complex(1.0f32, 0.0f32), Complex(1.0f32, 0.0f32)])), "singular csolve")
+
+    assert_eq(z.routine, "cgesv")
+    assert(z.cause == Singular(2), s"cause: ${z}")
+
+@test
+solve_refuses_shapes_before_lapack_sees_them() =
+    val rect = err(solve(from_rows[real](2, 3, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), vector([1.0, 2.0])), "non-square")
+
+    assert(rect.cause == Shape("the matrix is not square (2 × 3)"), s"$rect")
+    assert_eq(rect.routine, "")
+    assert_eq(rect.info(), 0)
+    assert_eq(rect.to_string(), "solve: the matrix is not square (2 × 3)")
+
+    val rows = err(solve(eye[real](2), vector([1.0, 2.0, 3.0])), "rhs rows")
+
+    assert(rows.cause == Shape("the right-hand side has 3 rows; the matrix has 2"), s"$rows")
+
+@test
+solve_of_an_empty_system_is_empty() =
+    val x = ok(solve(zeros[real](0, 0), zeros[real](0, 1)), "0 × 0 solve")
+
+    assert_eq(x.rows, 0)
+    assert_eq(x.cols, 1)
+
+// -- inv ------------------------------------------------------------------------------------------
+
+private hilbert[T: Scalar](n: usize) -> Mat[T]
+    val h: Mat[T] = zeros(n, n)
+
+    for i in 0..<n
+        for j in 0..<n do h.set(i, j, T.from_parts(1.0 / real(i + j + 1), 0.0))
+
+    h
+
+// The inverse of the 4 × 4 Hilbert matrix, in integers.
+private val HILBERT_4_INVERSE: [16]real = [16.0, -120.0, 240.0, -140.0, -120.0, 1200.0, -2700.0, 1680.0, 240.0, -2700.0, 6480.0, -4200.0, -140.0, 1680.0, -4200.0, 2800.0]
+
+@test
+inv_of_the_hilbert_matrix_is_its_integer_inverse() =
+    // cond₁(H₄) ≈ 2.8e4, so a relative error near 1e-12 is what a backward-stable inverse leaves.
+    assert_mat(ok(inv(hilbert[real](4)), "dinv"), from_rows(4, 4, HILBERT_4_INVERSE), 1.0e-9, "dgetri H4⁻¹")
+    assert_mat(ok(inv(hilbert[Complex[real]](4)), "zinv"), from_rows(4, 4, HILBERT_4_INVERSE), 1.0e-9, "zgetri H4⁻¹")
+    assert_mat(ok(inv(hilbert[f32](4)), "sinv"), from_rows(4, 4, HILBERT_4_INVERSE), 2.0, "sgetri H4⁻¹")
+
+@test
+inv_times_the_matrix_is_the_identity() =
+    val a: Mat[Complex[real]] = from_rows_c(3, 3, [2.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, -1.0, 4.0, 1.0])
+
+    assert_mat(matmul(a, ok(inv(a), "zinv")), eye(3), 1.0e-14, "A A⁻¹")
+
+@test
+inv_reports_a_singular_matrix_and_a_non_square_one() =
+    val e = err(inv(from_rows[real](3, 3, [1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 1.0, 1.0, 1.0])), "singular inv")
+
+    assert_eq(e.routine, "dgetrf")
+    assert(e.cause == Singular(3), s"$e")
+
+    val s = err(inv(zeros[f32](2, 3)), "rect inv")
+
+    assert(s.cause == Shape("the matrix is not square (2 × 3)"), s"$s")
+
+// -- det ------------------------------------------------------------------------------------------
+
+@test
+det_of_the_hilbert_matrix_is_one_over_6048000() =
+    assert_close(ok(det(hilbert[real](4)), "det") * 6048000.0, 1.0, 1.0e-10, "det H4")
+    assert_close(real(ok(det(hilbert[f32](4)), "sdet")) * 6048000.0, 1.0, 1.0e-2, "sdet H4")
+
+@test
+det_of_a_vandermonde_matrix_is_the_product_of_the_differences() =
+    // V[i][j] = xᵢʲ for x = (1, 2, 3, 4): ∏_{i<j} (xⱼ − xᵢ) = 1·2·3·1·2·1 = 12.
+    val xs = [1.0, 2.0, 3.0, 4.0]
+    val v: Mat[real] = zeros(4, 4)
+
+    for i in 0..<4
+        var p = 1.0
+
+        for j in 0..<4
+            v.set(i, j, p)
+            p = p * xs[i]
+
+    assert_close(ok(det(v), "det V"), 12.0, 1.0e-12, "det V")
+
+@test
+det_follows_the_row_interchanges_and_is_exactly_zero_when_singular() =
+    assert_eq(ok(det(from_rows[real](2, 2, [0.0, 1.0, 1.0, 0.0])), "swap"), -1.0)
+    assert_eq(ok(det(from_rows[real](3, 3, [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0])), "reverse"), -1.0)
+    assert_eq(ok(det(from_rows[real](2, 2, [1.0, 2.0, 2.0, 4.0])), "singular"), 0.0)
+    assert_eq(ok(det(zeros[real](0, 0)), "empty"), 1.0)
+
+    val i2 = ok(det(from_rows_c[Complex[real]](2, 2, [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])), "det iI")
+
+    assert_complex(i2, -1.0, 0.0, 0.0, "det(i I₂) = i² = −1")
+
+// -- rcond ----------------------------------------------------------------------------------------
+
+@test
+rcond_is_one_for_the_identity_and_small_for_hilbert() =
+    assert_close(ok(rcond(eye[real](5)), "rcond I"), 1.0, 1.0e-15, "rcond I")
+
+    // ‖H₄‖₁ = 25/12 and ‖H₄⁻¹‖₁ = 13620, so 1/κ₁ = 12/(25·13620). ?gecon estimates ‖A⁻¹‖₁ from below,
+    // so its answer is at least the true value and, for a matrix this small, equal to it.
+    val want = 12.0 / (25.0 * 13620.0)
+    val got = ok(rcond(hilbert[real](4)), "rcond H4")
+
+    assert(got >= want * 0.999999 && got <= want * 3.0, s"rcond H4: got $got, want about $want")
+
+    val e = err(rcond(from_rows[real](2, 2, [1.0, 1.0, 1.0, 1.0])), "rcond singular")
+
+    assert(e.cause == Singular(2), s"$e")
+
+// -- solve_triangular, lu_solve, chol_solve -------------------------------------------------------
+
+@test
+solve_triangular_reads_only_its_triangle() =
+    // The upper triangle holds 99s that must be ignored: L = [[2,0,0],[1,1,0],[3,−1,4]], x = (1, 2, 3).
+    val l: Mat[real] = from_rows(3, 3, [2.0, 99.0, 99.0, 1.0, 1.0, 99.0, 3.0, -1.0, 4.0])
+    val x = ok(solve_triangular(l, from_rows(3, 1, [2.0, 3.0, 13.0])), "trtrs lower")
+
+    assert_mat(x, from_rows(3, 1, [1.0, 2.0, 3.0]), 1.0e-15, "lower x")
+
+    val u: Mat[real] = from_rows(3, 3, [1.0, 2.0, 3.0, 99.0, 4.0, 5.0, 99.0, 99.0, 6.0])
+    val y = ok(solve_triangular(u, from_rows(3, 1, [14.0, 23.0, 18.0]), upper = true), "trtrs upper")
+
+    assert_mat(y, from_rows(3, 1, [1.0, 2.0, 3.0]), 1.0e-15, "upper x")
+
+    val e = err(solve_triangular(from_rows[real](2, 2, [1.0, 0.0, 5.0, 0.0]), vector([1.0, 1.0])), "trtrs singular")
+
+    assert_eq(e.routine, "dtrtrs")
+    assert(e.cause == Singular(2), s"$e")
+
+@test
+lu_solve_reuses_the_factorization() =
+    val a: Mat[Complex[real]] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 3.0, 0.0, 4.0, -1.0])
+    val f = ok(lu(a), "lu")
+    val x = ok(lu_solve(f, from_rows_c(2, 1, [1.0, 3.0, 4.0, 4.0])), "getrs")
+
+    assert_mat(x, from_rows_c(2, 1, [1.0, 0.0, 0.0, 1.0]), 1.0e-14, "zgetrs x")
+
+    val s = ok(lu(from_rows[real](2, 2, [1.0, 2.0, 2.0, 4.0])), "lu singular")
+    val e = err(lu_solve(s, vector([1.0, 1.0])), "getrs singular")
+
+    assert(e.cause == Singular(2), s"$e")
+
+@test
+rcond_is_in_the_one_norm() =
+    // A = [[1,0,0],[1,1,0],[1,0,1]]: ‖A‖₁ = 3 and ‖A⁻¹‖₁ = 3, so rcond₁ = 1/9; in the ∞-norm it would
+    // be 1/4.
+    assert_close(ok(rcond(from_rows[real](3, 3, [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])), "rcond₁"), 1.0 / 9.0, 1.0e-15, "rcond₁")
+    assert_close(real(ok(rcond(from_rows[Complex[f32]](3, 3, [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])), "crcond₁")), 1.0 / 9.0, 1.0e-6, "crcond₁")

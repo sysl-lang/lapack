@@ -1,0 +1,86 @@
+module sh.sysl.lapack
+
+/** Why a call failed, in LAPACK's terms with its 1-based index kept. */
+enum Cause derives Eq
+    /** `U(i, i)` is exactly zero (`?getrf`, `?gesv`, `?getri`), or `A(i, i)` is (`?trtrs`). */
+    Singular(index: usize)
+    /** The leading minor of order `minor` is not positive definite (`?potrf`). */
+    NotPositiveDefinite(minor: usize)
+    /** The iteration did not converge; `count` is LAPACK's `info`, whose meaning is the routine's. */
+    NoConvergence(count: usize)
+    /** LAPACK refused argument `position` — a call this module made wrongly, never the caller's data. */
+    IllegalArgument(position: usize)
+    /** The shapes do not fit, found before LAPACK was called. */
+    Shape(what: string)
+end Cause
+
+/** A failed call: the function of this module that was called, the LAPACK routine that reported
+ * the failure (empty for a shape found before any was called), and why.
+ */
+struct Error derives Eq
+    function: string
+    routine: string
+    cause: Cause
+
+    /** LAPACK's `info` for this failure: the index above zero, the argument's position negated
+     * below it, and 0 for a shape LAPACK never saw.
+     */
+    info(self) -> i32 = self.cause match
+        Singular(i) -> i32(i)
+        NotPositiveDefinite(i) -> i32(i)
+        NoConvergence(i) -> i32(i)
+        IllegalArgument(k) -> -i32(k)
+        Shape(_) -> 0
+
+    to_string(self) -> string = self.cause match
+        Singular(i) -> s"${self.function}: ${self.routine}: matrix is singular (U($i,$i) = 0)"
+        NotPositiveDefinite(i) -> s"${self.function}: ${self.routine}: matrix is not positive definite (leading minor $i)"
+        NoConvergence(i) -> s"${self.function}: ${self.routine}: failed to converge (info $i)"
+        IllegalArgument(k) -> s"${self.function}: ${self.routine}: illegal value in argument $k"
+        Shape(what) -> s"${self.function}: $what"
+
+impl Display for Error
+    display(self, out: *Writer, fmt: FormatSpec) = display_str(self.to_string(), out, fmt)
+
+/** What a positive `info` means for the routine that answered it. */
+private[lapack] enum Means
+    Singular
+    Indefinite
+    Unconverged
+    /** A positive `info` that is not a failure: `?getrf` for `det` and `lu`, which finish the
+     * factorization and report the zero pivot.
+     */
+    Nothing
+
+/** `info` as answered by `routine` (its letter-less name) for `function` of type `T`. */
+private[lapack] check[T: Scalar](function: string, routine: string, info: i32, means: Means) -> Result[unit, Error]
+    if info == 0 then return Ok(())
+
+    val name = T.prefix() + routine
+
+    if info < 0 then return Err(Error(function, name, IllegalArgument(usize(-info))))
+
+    val i = usize(info)
+
+    means match
+        Means.Singular -> Err(Error(function, name, Singular(i)))
+        Means.Indefinite -> Err(Error(function, name, NotPositiveDefinite(i)))
+        Means.Unconverged -> Err(Error(function, name, NoConvergence(i)))
+        Means.Nothing -> Ok(())
+
+/** A shape error for `function`. */
+private[lapack] shape[R](function: string, what: string) -> Result[R, Error] = Err(Error(function, "", Shape(what)))
+
+/** Every extent of `a` fits LAPACK's 32-bit `integer`. */
+private[lapack] fits[T](function: string, a: Mat[T]) -> Result[unit, Error]
+    val most = usize(i32::Max)
+
+    if a.rows > most || a.cols > most || a.ld > most then return shape(function, s"a ${a.rows} × ${a.cols} matrix is past LAPACK's 32-bit integer")
+
+    Ok(())
+
+/** `a` is square and fits. */
+private[lapack] square[T](function: string, a: Mat[T]) -> Result[unit, Error]
+    if a.rows != a.cols then return shape(function, s"the matrix is not square (${a.rows} × ${a.cols})")
+
+    fits(function, a)

@@ -1,0 +1,164 @@
+// LAPACK's Fortran interface, one declaration per routine and per type.
+//
+// **Fortran's calling convention, not LAPACKE's.** Every argument is an address — an `integer` is
+// a `*i32`, a `character` a `*u8` — and each `character` argument adds a hidden length after all the
+// others, as gfortran passes it (`usize`, always 1 here). An f2c-built LAPACK, which is what
+// Accelerate's classic interface is, ignores the hidden lengths; passing them costs it nothing. The
+// matrices are column-major with a leading dimension, as LAPACK stores them, so nothing is
+// transposed on the way in or out.
+//
+// **Why not LAPACKE.** nex's compiler calls these same symbols (`dgesv_`, …) in exactly this
+// convention, and the nex interpreter reaches LAPACK through this package so that an interpreted
+// `solve` and a compiled one run the same routine on the same bytes and answer the same bits.
+// LAPACKE would add a row/column-major layer and, on its row-major path, a transposing copy; its
+// column-major path calls these routines anyway. The Fortran symbols are also the one interface
+// both libraries this package is used with export under the same names: Accelerate's classic
+// `dgesv_` (its `ACCELERATE_NEW_LAPACK` interface is `dgesv$NEWLAPACK`, a different symbol) and
+// OpenBLAS's.
+//
+// **`integer` is 32 bits**: the LP64 interface, which is Accelerate's classic one and the one
+// Homebrew's and the distributions' OpenBLAS are built with.
+//
+// **Which library answers is decided at the link.** `@link("lapack")` becomes `-llapack`. On macOS
+// the SDK's `liblapack.tbd` is Accelerate's `libLAPACK.dylib` — the library nex links through
+// `-framework Accelerate`. With `--link-path /opt/homebrew/opt/openblas/lib` the same name finds
+// Homebrew's OpenBLAS (`liblapack.dylib` is a link to `libopenblas.dylib` there), and on Linux it is
+// the distribution's LAPACK, OpenBLAS where that is the alternative chosen.
+//
+// **A `REAL` function is not declared.** gfortran returns a `REAL` function's value as a `float`;
+// f2c — so Accelerate's classic interface — returns it as a `double`. One declaration cannot be right
+// for both, and the link, not this file, decides which library answers. So `dlamch`, `dlange` and
+// `zlange` (which return `DOUBLE PRECISION` in both) are here, and `slamch`, `slange` and `clange`
+// are not; `sh.sysl.lapack.lamch` answers `slamch`'s values from `f32`'s own constants.
+module sh.sysl.lapack.c
+
+@link("lapack")
+
+import sysl.math.complex.Complex
+
+type C32 = Complex[f32]
+type C64 = Complex[real]
+
+// -- ?gesv: A X = B by LU with partial pivoting ------------------------------------------------------
+
+@needs(os) extern "sgesv_" sgesv(n: *i32, nrhs: *i32, a: *f32, lda: *i32, ipiv: *i32, b: *f32, ldb: *i32, info: *i32)
+@needs(os) extern "dgesv_" dgesv(n: *i32, nrhs: *i32, a: *real, lda: *i32, ipiv: *i32, b: *real, ldb: *i32, info: *i32)
+@needs(os) extern "cgesv_" cgesv(n: *i32, nrhs: *i32, a: *C32, lda: *i32, ipiv: *i32, b: *C32, ldb: *i32, info: *i32)
+@needs(os) extern "zgesv_" zgesv(n: *i32, nrhs: *i32, a: *C64, lda: *i32, ipiv: *i32, b: *C64, ldb: *i32, info: *i32)
+
+// -- ?getrf: the LU factorization P A = L U --------------------------------------------------------
+
+@needs(os) extern "sgetrf_" sgetrf(m: *i32, n: *i32, a: *f32, lda: *i32, ipiv: *i32, info: *i32)
+@needs(os) extern "dgetrf_" dgetrf(m: *i32, n: *i32, a: *real, lda: *i32, ipiv: *i32, info: *i32)
+@needs(os) extern "cgetrf_" cgetrf(m: *i32, n: *i32, a: *C32, lda: *i32, ipiv: *i32, info: *i32)
+@needs(os) extern "zgetrf_" zgetrf(m: *i32, n: *i32, a: *C64, lda: *i32, ipiv: *i32, info: *i32)
+
+// -- ?getrs: A X = B, Aᵀ X = B or Aᴴ X = B from ?getrf's factors ----------------------------------
+
+@needs(os) extern "sgetrs_" sgetrs(trans: *u8, n: *i32, nrhs: *i32, a: *f32, lda: *i32, ipiv: *i32, b: *f32, ldb: *i32, info: *i32, trans_len: usize)
+@needs(os) extern "dgetrs_" dgetrs(trans: *u8, n: *i32, nrhs: *i32, a: *real, lda: *i32, ipiv: *i32, b: *real, ldb: *i32, info: *i32, trans_len: usize)
+@needs(os) extern "cgetrs_" cgetrs(trans: *u8, n: *i32, nrhs: *i32, a: *C32, lda: *i32, ipiv: *i32, b: *C32, ldb: *i32, info: *i32, trans_len: usize)
+@needs(os) extern "zgetrs_" zgetrs(trans: *u8, n: *i32, nrhs: *i32, a: *C64, lda: *i32, ipiv: *i32, b: *C64, ldb: *i32, info: *i32, trans_len: usize)
+
+// -- ?getri: the inverse from ?getrf's factors -----------------------------------------------------
+
+@needs(os) extern "sgetri_" sgetri(n: *i32, a: *f32, lda: *i32, ipiv: *i32, work: *f32, lwork: *i32, info: *i32)
+@needs(os) extern "dgetri_" dgetri(n: *i32, a: *real, lda: *i32, ipiv: *i32, work: *real, lwork: *i32, info: *i32)
+@needs(os) extern "cgetri_" cgetri(n: *i32, a: *C32, lda: *i32, ipiv: *i32, work: *C32, lwork: *i32, info: *i32)
+@needs(os) extern "zgetri_" zgetri(n: *i32, a: *C64, lda: *i32, ipiv: *i32, work: *C64, lwork: *i32, info: *i32)
+
+// -- ?gecon: the reciprocal condition number from ?getrf's factors --------------------------------
+
+@needs(os) extern "sgecon_" sgecon(norm: *u8, n: *i32, a: *f32, lda: *i32, anorm: *f32, rcond: *f32, work: *f32, iwork: *i32, info: *i32, norm_len: usize)
+@needs(os) extern "dgecon_" dgecon(norm: *u8, n: *i32, a: *real, lda: *i32, anorm: *real, rcond: *real, work: *real, iwork: *i32, info: *i32, norm_len: usize)
+@needs(os) extern "cgecon_" cgecon(norm: *u8, n: *i32, a: *C32, lda: *i32, anorm: *f32, rcond: *f32, work: *C32, rwork: *f32, info: *i32, norm_len: usize)
+@needs(os) extern "zgecon_" zgecon(norm: *u8, n: *i32, a: *C64, lda: *i32, anorm: *real, rcond: *real, work: *C64, rwork: *real, info: *i32, norm_len: usize)
+
+// -- ?potrf: the Cholesky factorization of a symmetric / Hermitian positive-definite matrix -------
+
+@needs(os) extern "spotrf_" spotrf(uplo: *u8, n: *i32, a: *f32, lda: *i32, info: *i32, uplo_len: usize)
+@needs(os) extern "dpotrf_" dpotrf(uplo: *u8, n: *i32, a: *real, lda: *i32, info: *i32, uplo_len: usize)
+@needs(os) extern "cpotrf_" cpotrf(uplo: *u8, n: *i32, a: *C32, lda: *i32, info: *i32, uplo_len: usize)
+@needs(os) extern "zpotrf_" zpotrf(uplo: *u8, n: *i32, a: *C64, lda: *i32, info: *i32, uplo_len: usize)
+
+// -- ?potrs: A X = B from ?potrf's factor ----------------------------------------------------------
+
+@needs(os) extern "spotrs_" spotrs(uplo: *u8, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, info: *i32, uplo_len: usize)
+@needs(os) extern "dpotrs_" dpotrs(uplo: *u8, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, info: *i32, uplo_len: usize)
+@needs(os) extern "cpotrs_" cpotrs(uplo: *u8, n: *i32, nrhs: *i32, a: *C32, lda: *i32, b: *C32, ldb: *i32, info: *i32, uplo_len: usize)
+@needs(os) extern "zpotrs_" zpotrs(uplo: *u8, n: *i32, nrhs: *i32, a: *C64, lda: *i32, b: *C64, ldb: *i32, info: *i32, uplo_len: usize)
+
+// -- ?geqrf: the QR factorization, R and the Householder reflectors -------------------------------
+
+@needs(os) extern "sgeqrf_" sgeqrf(m: *i32, n: *i32, a: *f32, lda: *i32, tau: *f32, work: *f32, lwork: *i32, info: *i32)
+@needs(os) extern "dgeqrf_" dgeqrf(m: *i32, n: *i32, a: *real, lda: *i32, tau: *real, work: *real, lwork: *i32, info: *i32)
+@needs(os) extern "cgeqrf_" cgeqrf(m: *i32, n: *i32, a: *C32, lda: *i32, tau: *C32, work: *C32, lwork: *i32, info: *i32)
+@needs(os) extern "zgeqrf_" zgeqrf(m: *i32, n: *i32, a: *C64, lda: *i32, tau: *C64, work: *C64, lwork: *i32, info: *i32)
+
+// -- ?orgqr / ?ungqr: Q from ?geqrf's reflectors ---------------------------------------------------
+
+@needs(os) extern "sorgqr_" sorgqr(m: *i32, n: *i32, k: *i32, a: *f32, lda: *i32, tau: *f32, work: *f32, lwork: *i32, info: *i32)
+@needs(os) extern "dorgqr_" dorgqr(m: *i32, n: *i32, k: *i32, a: *real, lda: *i32, tau: *real, work: *real, lwork: *i32, info: *i32)
+@needs(os) extern "cungqr_" cungqr(m: *i32, n: *i32, k: *i32, a: *C32, lda: *i32, tau: *C32, work: *C32, lwork: *i32, info: *i32)
+@needs(os) extern "zungqr_" zungqr(m: *i32, n: *i32, k: *i32, a: *C64, lda: *i32, tau: *C64, work: *C64, lwork: *i32, info: *i32)
+
+// -- ?gels: least squares or minimum norm by QR / LQ, A of full rank -------------------------------
+
+@needs(os) extern "sgels_" sgels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, work: *f32, lwork: *i32, info: *i32, trans_len: usize)
+@needs(os) extern "dgels_" dgels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, work: *real, lwork: *i32, info: *i32, trans_len: usize)
+@needs(os) extern "cgels_" cgels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *C32, lda: *i32, b: *C32, ldb: *i32, work: *C32, lwork: *i32, info: *i32, trans_len: usize)
+@needs(os) extern "zgels_" zgels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *C64, lda: *i32, b: *C64, ldb: *i32, work: *C64, lwork: *i32, info: *i32, trans_len: usize)
+
+// -- ?gelsd: minimum-norm least squares by the SVD, any rank ---------------------------------------
+
+@needs(os) extern "sgelsd_" sgelsd(m: *i32, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, s: *f32, rcond: *f32, rank: *i32, work: *f32, lwork: *i32, iwork: *i32, info: *i32)
+@needs(os) extern "dgelsd_" dgelsd(m: *i32, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, s: *real, rcond: *real, rank: *i32, work: *real, lwork: *i32, iwork: *i32, info: *i32)
+@needs(os) extern "cgelsd_" cgelsd(m: *i32, n: *i32, nrhs: *i32, a: *C32, lda: *i32, b: *C32, ldb: *i32, s: *f32, rcond: *f32, rank: *i32, work: *C32, lwork: *i32, rwork: *f32, iwork: *i32, info: *i32)
+@needs(os) extern "zgelsd_" zgelsd(m: *i32, n: *i32, nrhs: *i32, a: *C64, lda: *i32, b: *C64, ldb: *i32, s: *real, rcond: *real, rank: *i32, work: *C64, lwork: *i32, rwork: *real, iwork: *i32, info: *i32)
+
+// -- ?geev: the eigenvalues and, optionally, eigenvectors of a general matrix ---------------------
+
+@needs(os) extern "sgeev_" sgeev(jobvl: *u8, jobvr: *u8, n: *i32, a: *f32, lda: *i32, wr: *f32, wi: *f32, vl: *f32, ldvl: *i32, vr: *f32, ldvr: *i32, work: *f32, lwork: *i32, info: *i32, jobvl_len: usize, jobvr_len: usize)
+@needs(os) extern "dgeev_" dgeev(jobvl: *u8, jobvr: *u8, n: *i32, a: *real, lda: *i32, wr: *real, wi: *real, vl: *real, ldvl: *i32, vr: *real, ldvr: *i32, work: *real, lwork: *i32, info: *i32, jobvl_len: usize, jobvr_len: usize)
+@needs(os) extern "cgeev_" cgeev(jobvl: *u8, jobvr: *u8, n: *i32, a: *C32, lda: *i32, w: *C32, vl: *C32, ldvl: *i32, vr: *C32, ldvr: *i32, work: *C32, lwork: *i32, rwork: *f32, info: *i32, jobvl_len: usize, jobvr_len: usize)
+@needs(os) extern "zgeev_" zgeev(jobvl: *u8, jobvr: *u8, n: *i32, a: *C64, lda: *i32, w: *C64, vl: *C64, ldvl: *i32, vr: *C64, ldvr: *i32, work: *C64, lwork: *i32, rwork: *real, info: *i32, jobvl_len: usize, jobvr_len: usize)
+
+// -- ?syevd / ?heevd: a symmetric / Hermitian eigenproblem, divide and conquer ---------------------
+
+@needs(os) extern "ssyevd_" ssyevd(jobz: *u8, uplo: *u8, n: *i32, a: *f32, lda: *i32, w: *f32, work: *f32, lwork: *i32, iwork: *i32, liwork: *i32, info: *i32, jobz_len: usize, uplo_len: usize)
+@needs(os) extern "dsyevd_" dsyevd(jobz: *u8, uplo: *u8, n: *i32, a: *real, lda: *i32, w: *real, work: *real, lwork: *i32, iwork: *i32, liwork: *i32, info: *i32, jobz_len: usize, uplo_len: usize)
+@needs(os) extern "cheevd_" cheevd(jobz: *u8, uplo: *u8, n: *i32, a: *C32, lda: *i32, w: *f32, work: *C32, lwork: *i32, rwork: *f32, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32, jobz_len: usize, uplo_len: usize)
+@needs(os) extern "zheevd_" zheevd(jobz: *u8, uplo: *u8, n: *i32, a: *C64, lda: *i32, w: *real, work: *C64, lwork: *i32, rwork: *real, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32, jobz_len: usize, uplo_len: usize)
+
+// -- ?gesdd: the singular value decomposition, divide and conquer ---------------------------------
+
+@needs(os) extern "sgesdd_" sgesdd(jobz: *u8, m: *i32, n: *i32, a: *f32, lda: *i32, s: *f32, u: *f32, ldu: *i32, vt: *f32, ldvt: *i32, work: *f32, lwork: *i32, iwork: *i32, info: *i32, jobz_len: usize)
+@needs(os) extern "dgesdd_" dgesdd(jobz: *u8, m: *i32, n: *i32, a: *real, lda: *i32, s: *real, u: *real, ldu: *i32, vt: *real, ldvt: *i32, work: *real, lwork: *i32, iwork: *i32, info: *i32, jobz_len: usize)
+@needs(os) extern "cgesdd_" cgesdd(jobz: *u8, m: *i32, n: *i32, a: *C32, lda: *i32, s: *f32, u: *C32, ldu: *i32, vt: *C32, ldvt: *i32, work: *C32, lwork: *i32, rwork: *f32, iwork: *i32, info: *i32, jobz_len: usize)
+@needs(os) extern "zgesdd_" zgesdd(jobz: *u8, m: *i32, n: *i32, a: *C64, lda: *i32, s: *real, u: *C64, ldu: *i32, vt: *C64, ldvt: *i32, work: *C64, lwork: *i32, rwork: *real, iwork: *i32, info: *i32, jobz_len: usize)
+
+// -- ?gesvd: the singular value decomposition, QR iteration ---------------------------------------
+
+@needs(os) extern "sgesvd_" sgesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *f32, lda: *i32, s: *f32, u: *f32, ldu: *i32, vt: *f32, ldvt: *i32, work: *f32, lwork: *i32, info: *i32, jobu_len: usize, jobvt_len: usize)
+@needs(os) extern "dgesvd_" dgesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *real, lda: *i32, s: *real, u: *real, ldu: *i32, vt: *real, ldvt: *i32, work: *real, lwork: *i32, info: *i32, jobu_len: usize, jobvt_len: usize)
+@needs(os) extern "cgesvd_" cgesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *C32, lda: *i32, s: *f32, u: *C32, ldu: *i32, vt: *C32, ldvt: *i32, work: *C32, lwork: *i32, rwork: *f32, info: *i32, jobu_len: usize, jobvt_len: usize)
+@needs(os) extern "zgesvd_" zgesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *C64, lda: *i32, s: *real, u: *C64, ldu: *i32, vt: *C64, ldvt: *i32, work: *C64, lwork: *i32, rwork: *real, info: *i32, jobu_len: usize, jobvt_len: usize)
+
+// -- ?trtrs: a triangular system ------------------------------------------------------------------
+
+@needs(os) extern "strtrs_" strtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, info: *i32, uplo_len: usize, trans_len: usize, diag_len: usize)
+@needs(os) extern "dtrtrs_" dtrtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, info: *i32, uplo_len: usize, trans_len: usize, diag_len: usize)
+@needs(os) extern "ctrtrs_" ctrtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *C32, lda: *i32, b: *C32, ldb: *i32, info: *i32, uplo_len: usize, trans_len: usize, diag_len: usize)
+@needs(os) extern "ztrtrs_" ztrtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *C64, lda: *i32, b: *C64, ldb: *i32, info: *i32, uplo_len: usize, trans_len: usize, diag_len: usize)
+
+// -- The `DOUBLE PRECISION` functions -------------------------------------------------------------
+
+// A machine parameter: `'E'` the relative machine precision, `'S'` the safe minimum, `'B'` the base,
+// `'P'` eps × base, `'N'` the mantissa digits, `'R'` 1 where rounding occurs, `'M'` the minimum
+// exponent, `'U'` the underflow threshold, `'L'` the maximum exponent, `'O'` the overflow threshold.
+@needs(os) extern "dlamch_" dlamch(cmach: *u8, cmach_len: usize) -> real
+
+// A matrix norm: `'M'` the largest |aᵢⱼ|, `'1'` / `'O'` the 1-norm, `'I'` the ∞-norm, `'F'` the
+// Frobenius norm. `work` holds m reals for the ∞-norm and is not read otherwise.
+@needs(os) extern "dlange_" dlange(norm: *u8, m: *i32, n: *i32, a: *real, lda: *i32, work: *real, norm_len: usize) -> real
+@needs(os) extern "zlange_" zlange(norm: *u8, m: *i32, n: *i32, a: *C64, lda: *i32, work: *real, norm_len: usize) -> real

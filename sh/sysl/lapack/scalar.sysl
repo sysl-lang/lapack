@@ -1,0 +1,241 @@
+module sh.sysl.lapack
+
+import sh.sysl.lapack.c
+import sysl.math.Float
+import sysl.math.complex.Complex
+
+/** One of LAPACK's four element types — `f32`, `real`, `Complex[f32]`, `Complex[real]` (`s`, `d`,
+ * `c`, `z`) — and its routines under one name each.
+ *
+ * Each routine takes the arguments of its Fortran declaration in `sh.sysl.lapack.c`, every one an
+ * address, with the hidden `character` lengths supplied here. Where the real and the complex
+ * routine differ, the signature is the union of the two and each type reads the part it has:
+ *
+ * - `gecon`: a real type reads `iwork` (n integers) and a complex one `rwork` (2n reals);
+ * - `gelsd`, `gesdd`, `gesvd`: a complex type reads `rwork`, a real one does not;
+ * - `geev`: a real type answers the values in `wr` and `wi`, a complex one in `w`; a complex type
+ *   reads `rwork` (2n reals);
+ * - `heevd` is `?syevd` for a real type, which reads neither `rwork` nor `lrwork`;
+ * - `ungqr` is `?orgqr` for a real type.
+ *
+ * A generic body reaches them through the type — `T.getrf(…)` — which is how every function in this
+ * module is written once for all four.
+ */
+trait Scalar: Zero + One + Eq + Neg + Add + Sub + Mul + Div
+    /** The real type of the same width: `f32` or `real`. */
+    type Real: Width
+
+    /** LAPACK's letter for the type: `"s"`, `"d"`, `"c"` or `"z"`. */
+    prefix() -> string
+    is_complex() -> bool
+    real_part(x: Self) -> Self::Real
+    imag_part(x: Self) -> Self::Real
+    conjugate(x: Self) -> Self
+    of_real(x: Self::Real) -> Self
+    /** The value with parts `re` and `im`, rounded to the width; a real type takes `re` alone. */
+    from_parts(re: real, im: real) -> Self
+    magnitude(x: Self) -> Self::Real
+
+    gesv(n: *i32, nrhs: *i32, a: *Self, lda: *i32, ipiv: *i32, b: *Self, ldb: *i32, info: *i32)
+    getrf(m: *i32, n: *i32, a: *Self, lda: *i32, ipiv: *i32, info: *i32)
+    getrs(trans: *u8, n: *i32, nrhs: *i32, a: *Self, lda: *i32, ipiv: *i32, b: *Self, ldb: *i32, info: *i32)
+    getri(n: *i32, a: *Self, lda: *i32, ipiv: *i32, work: *Self, lwork: *i32, info: *i32)
+    gecon(norm: *u8, n: *i32, a: *Self, lda: *i32, anorm: *Self::Real, rcond: *Self::Real, work: *Self, rwork: *Self::Real, iwork: *i32, info: *i32)
+    potrf(uplo: *u8, n: *i32, a: *Self, lda: *i32, info: *i32)
+    potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *Self, lda: *i32, b: *Self, ldb: *i32, info: *i32)
+    geqrf(m: *i32, n: *i32, a: *Self, lda: *i32, tau: *Self, work: *Self, lwork: *i32, info: *i32)
+    ungqr(m: *i32, n: *i32, k: *i32, a: *Self, lda: *i32, tau: *Self, work: *Self, lwork: *i32, info: *i32)
+    gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *Self, lda: *i32, b: *Self, ldb: *i32, work: *Self, lwork: *i32, info: *i32)
+    gelsd(m: *i32, n: *i32, nrhs: *i32, a: *Self, lda: *i32, b: *Self, ldb: *i32, s: *Self::Real, rcond: *Self::Real, rank: *i32, work: *Self, lwork: *i32, rwork: *Self::Real, iwork: *i32, info: *i32)
+    geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *Self, lda: *i32, w: *Self, wr: *Self::Real, wi: *Self::Real, vl: *Self, ldvl: *i32, vr: *Self, ldvr: *i32, work: *Self, lwork: *i32, rwork: *Self::Real, info: *i32)
+    heevd(jobz: *u8, uplo: *u8, n: *i32, a: *Self, lda: *i32, w: *Self::Real, work: *Self, lwork: *i32, rwork: *Self::Real, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32)
+    gesdd(jobz: *u8, m: *i32, n: *i32, a: *Self, lda: *i32, s: *Self::Real, u: *Self, ldu: *i32, vt: *Self, ldvt: *i32, work: *Self, lwork: *i32, rwork: *Self::Real, iwork: *i32, info: *i32)
+    gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Self, lda: *i32, s: *Self::Real, u: *Self, ldu: *i32, vt: *Self, ldvt: *i32, work: *Self, lwork: *i32, rwork: *Self::Real, info: *i32)
+    trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Self, lda: *i32, b: *Self, ldb: *i32, info: *i32)
+
+/** A real width LAPACK has — `f32` or `real` — and the complex routines of that width, which is
+ * what `Complex[F]`'s `Scalar` dispatches through: an `impl` covers `Complex[F]` for every `F` at once,
+ * so the choice between `c` and `z` is the width's to make.
+ */
+trait Width: Float
+    /** LAPACK's machine parameter `cmach` (`dlamch` / `slamch`): see `lamch`. */
+    machine(cmach: u8) -> Self
+    /** A workspace size LAPACK answered in a `work(1)` of this type, as a count of at least 1. */
+    to_count(self) -> usize
+    /** The value widened to `real`. */
+    to_real(self) -> real
+    /** `x` rounded to this width. */
+    of_real64(x: real) -> Self
+
+    cx_prefix() -> string
+    cx_gesv(n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, ipiv: *i32, b: *Complex[Self], ldb: *i32, info: *i32)
+    cx_getrf(m: *i32, n: *i32, a: *Complex[Self], lda: *i32, ipiv: *i32, info: *i32)
+    cx_getrs(trans: *u8, n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, ipiv: *i32, b: *Complex[Self], ldb: *i32, info: *i32)
+    cx_getri(n: *i32, a: *Complex[Self], lda: *i32, ipiv: *i32, work: *Complex[Self], lwork: *i32, info: *i32)
+    cx_gecon(norm: *u8, n: *i32, a: *Complex[Self], lda: *i32, anorm: *Self, rcond: *Self, work: *Complex[Self], rwork: *Self, info: *i32)
+    cx_potrf(uplo: *u8, n: *i32, a: *Complex[Self], lda: *i32, info: *i32)
+    cx_potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, b: *Complex[Self], ldb: *i32, info: *i32)
+    cx_geqrf(m: *i32, n: *i32, a: *Complex[Self], lda: *i32, tau: *Complex[Self], work: *Complex[Self], lwork: *i32, info: *i32)
+    cx_ungqr(m: *i32, n: *i32, k: *i32, a: *Complex[Self], lda: *i32, tau: *Complex[Self], work: *Complex[Self], lwork: *i32, info: *i32)
+    cx_gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, b: *Complex[Self], ldb: *i32, work: *Complex[Self], lwork: *i32, info: *i32)
+    cx_gelsd(m: *i32, n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, b: *Complex[Self], ldb: *i32, s: *Self, rcond: *Self, rank: *i32, work: *Complex[Self], lwork: *i32, rwork: *Self, iwork: *i32, info: *i32)
+    cx_geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *Complex[Self], lda: *i32, w: *Complex[Self], vl: *Complex[Self], ldvl: *i32, vr: *Complex[Self], ldvr: *i32, work: *Complex[Self], lwork: *i32, rwork: *Self, info: *i32)
+    cx_heevd(jobz: *u8, uplo: *u8, n: *i32, a: *Complex[Self], lda: *i32, w: *Self, work: *Complex[Self], lwork: *i32, rwork: *Self, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32)
+    cx_gesdd(jobz: *u8, m: *i32, n: *i32, a: *Complex[Self], lda: *i32, s: *Self, u: *Complex[Self], ldu: *i32, vt: *Complex[Self], ldvt: *i32, work: *Complex[Self], lwork: *i32, rwork: *Self, iwork: *i32, info: *i32)
+    cx_gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Complex[Self], lda: *i32, s: *Self, u: *Complex[Self], ldu: *i32, vt: *Complex[Self], ldvt: *i32, work: *Complex[Self], lwork: *i32, rwork: *Self, info: *i32)
+    cx_trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, b: *Complex[Self], ldb: *i32, info: *i32)
+
+// -- f32: `s` -------------------------------------------------------------------------------------
+
+impl Scalar for f32
+    type Real = f32
+
+    prefix() -> string = "s"
+    is_complex() -> bool = false
+    real_part(x: f32) -> f32 = x
+    imag_part(x: f32) -> f32 = 0.0
+    conjugate(x: f32) -> f32 = x
+    of_real(x: f32) -> f32 = x
+    from_parts(re: real, im: real) -> f32 = f32(re)
+    magnitude(x: f32) -> f32 = x.abs()
+
+    gesv(n: *i32, nrhs: *i32, a: *f32, lda: *i32, ipiv: *i32, b: *f32, ldb: *i32, info: *i32) = c.sgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+    getrf(m: *i32, n: *i32, a: *f32, lda: *i32, ipiv: *i32, info: *i32) = c.sgetrf(m, n, a, lda, ipiv, info)
+    getrs(trans: *u8, n: *i32, nrhs: *i32, a: *f32, lda: *i32, ipiv: *i32, b: *f32, ldb: *i32, info: *i32) = c.sgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info, 1)
+    getri(n: *i32, a: *f32, lda: *i32, ipiv: *i32, work: *f32, lwork: *i32, info: *i32) = c.sgetri(n, a, lda, ipiv, work, lwork, info)
+    gecon(norm: *u8, n: *i32, a: *f32, lda: *i32, anorm: *f32, rcond: *f32, work: *f32, rwork: *f32, iwork: *i32, info: *i32) = c.sgecon(norm, n, a, lda, anorm, rcond, work, iwork, info, 1)
+    potrf(uplo: *u8, n: *i32, a: *f32, lda: *i32, info: *i32) = c.spotrf(uplo, n, a, lda, info, 1)
+    potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, info: *i32) = c.spotrs(uplo, n, nrhs, a, lda, b, ldb, info, 1)
+    geqrf(m: *i32, n: *i32, a: *f32, lda: *i32, tau: *f32, work: *f32, lwork: *i32, info: *i32) = c.sgeqrf(m, n, a, lda, tau, work, lwork, info)
+    ungqr(m: *i32, n: *i32, k: *i32, a: *f32, lda: *i32, tau: *f32, work: *f32, lwork: *i32, info: *i32) = c.sorgqr(m, n, k, a, lda, tau, work, lwork, info)
+    gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, work: *f32, lwork: *i32, info: *i32) = c.sgels(trans, m, n, nrhs, a, lda, b, ldb, work, lwork, info, 1)
+    gelsd(m: *i32, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, s: *f32, rcond: *f32, rank: *i32, work: *f32, lwork: *i32, rwork: *f32, iwork: *i32, info: *i32) = c.sgelsd(m, n, nrhs, a, lda, b, ldb, s, rcond, rank, work, lwork, iwork, info)
+    geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *f32, lda: *i32, w: *f32, wr: *f32, wi: *f32, vl: *f32, ldvl: *i32, vr: *f32, ldvr: *i32, work: *f32, lwork: *i32, rwork: *f32, info: *i32) = c.sgeev(jobvl, jobvr, n, a, lda, wr, wi, vl, ldvl, vr, ldvr, work, lwork, info, 1, 1)
+    heevd(jobz: *u8, uplo: *u8, n: *i32, a: *f32, lda: *i32, w: *f32, work: *f32, lwork: *i32, rwork: *f32, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32) = c.ssyevd(jobz, uplo, n, a, lda, w, work, lwork, iwork, liwork, info, 1, 1)
+    gesdd(jobz: *u8, m: *i32, n: *i32, a: *f32, lda: *i32, s: *f32, u: *f32, ldu: *i32, vt: *f32, ldvt: *i32, work: *f32, lwork: *i32, rwork: *f32, iwork: *i32, info: *i32) = c.sgesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, iwork, info, 1)
+    gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *f32, lda: *i32, s: *f32, u: *f32, ldu: *i32, vt: *f32, ldvt: *i32, work: *f32, lwork: *i32, rwork: *f32, info: *i32) = c.sgesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, info, 1, 1)
+    trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *f32, lda: *i32, b: *f32, ldb: *i32, info: *i32) = c.strtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb, info, 1, 1, 1)
+
+// -- real: `d` ------------------------------------------------------------------------------------
+
+impl Scalar for real
+    type Real = real
+
+    prefix() -> string = "d"
+    is_complex() -> bool = false
+    real_part(x: real) -> real = x
+    imag_part(x: real) -> real = 0.0
+    conjugate(x: real) -> real = x
+    of_real(x: real) -> real = x
+    from_parts(re: real, im: real) -> real = re
+    magnitude(x: real) -> real = x.abs()
+
+    gesv(n: *i32, nrhs: *i32, a: *real, lda: *i32, ipiv: *i32, b: *real, ldb: *i32, info: *i32) = c.dgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+    getrf(m: *i32, n: *i32, a: *real, lda: *i32, ipiv: *i32, info: *i32) = c.dgetrf(m, n, a, lda, ipiv, info)
+    getrs(trans: *u8, n: *i32, nrhs: *i32, a: *real, lda: *i32, ipiv: *i32, b: *real, ldb: *i32, info: *i32) = c.dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info, 1)
+    getri(n: *i32, a: *real, lda: *i32, ipiv: *i32, work: *real, lwork: *i32, info: *i32) = c.dgetri(n, a, lda, ipiv, work, lwork, info)
+    gecon(norm: *u8, n: *i32, a: *real, lda: *i32, anorm: *real, rcond: *real, work: *real, rwork: *real, iwork: *i32, info: *i32) = c.dgecon(norm, n, a, lda, anorm, rcond, work, iwork, info, 1)
+    potrf(uplo: *u8, n: *i32, a: *real, lda: *i32, info: *i32) = c.dpotrf(uplo, n, a, lda, info, 1)
+    potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, info: *i32) = c.dpotrs(uplo, n, nrhs, a, lda, b, ldb, info, 1)
+    geqrf(m: *i32, n: *i32, a: *real, lda: *i32, tau: *real, work: *real, lwork: *i32, info: *i32) = c.dgeqrf(m, n, a, lda, tau, work, lwork, info)
+    ungqr(m: *i32, n: *i32, k: *i32, a: *real, lda: *i32, tau: *real, work: *real, lwork: *i32, info: *i32) = c.dorgqr(m, n, k, a, lda, tau, work, lwork, info)
+    gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, work: *real, lwork: *i32, info: *i32) = c.dgels(trans, m, n, nrhs, a, lda, b, ldb, work, lwork, info, 1)
+    gelsd(m: *i32, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, s: *real, rcond: *real, rank: *i32, work: *real, lwork: *i32, rwork: *real, iwork: *i32, info: *i32) = c.dgelsd(m, n, nrhs, a, lda, b, ldb, s, rcond, rank, work, lwork, iwork, info)
+    geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *real, lda: *i32, w: *real, wr: *real, wi: *real, vl: *real, ldvl: *i32, vr: *real, ldvr: *i32, work: *real, lwork: *i32, rwork: *real, info: *i32) = c.dgeev(jobvl, jobvr, n, a, lda, wr, wi, vl, ldvl, vr, ldvr, work, lwork, info, 1, 1)
+    heevd(jobz: *u8, uplo: *u8, n: *i32, a: *real, lda: *i32, w: *real, work: *real, lwork: *i32, rwork: *real, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32) = c.dsyevd(jobz, uplo, n, a, lda, w, work, lwork, iwork, liwork, info, 1, 1)
+    gesdd(jobz: *u8, m: *i32, n: *i32, a: *real, lda: *i32, s: *real, u: *real, ldu: *i32, vt: *real, ldvt: *i32, work: *real, lwork: *i32, rwork: *real, iwork: *i32, info: *i32) = c.dgesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, iwork, info, 1)
+    gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *real, lda: *i32, s: *real, u: *real, ldu: *i32, vt: *real, ldvt: *i32, work: *real, lwork: *i32, rwork: *real, info: *i32) = c.dgesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, info, 1, 1)
+    trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *real, lda: *i32, b: *real, ldb: *i32, info: *i32) = c.dtrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb, info, 1, 1, 1)
+
+// -- Complex[F]: `c` and `z`, through the width ---------------------------------------------------
+
+impl[F: Width] Scalar for Complex[F]
+    type Real = F
+
+    prefix() -> string = F.cx_prefix()
+    is_complex() -> bool = true
+    real_part(x: Complex[F]) -> F = x.re
+    imag_part(x: Complex[F]) -> F = x.im
+    conjugate(x: Complex[F]) -> Complex[F] = x.conj()
+    of_real(x: F) -> Complex[F] = Complex(x, F.zero())
+    from_parts(re: real, im: real) -> Complex[F] = Complex(F.of_real64(re), F.of_real64(im))
+    magnitude(x: Complex[F]) -> F = x.abs()
+
+    gesv(n: *i32, nrhs: *i32, a: *Complex[F], lda: *i32, ipiv: *i32, b: *Complex[F], ldb: *i32, info: *i32) = F.cx_gesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+    getrf(m: *i32, n: *i32, a: *Complex[F], lda: *i32, ipiv: *i32, info: *i32) = F.cx_getrf(m, n, a, lda, ipiv, info)
+    getrs(trans: *u8, n: *i32, nrhs: *i32, a: *Complex[F], lda: *i32, ipiv: *i32, b: *Complex[F], ldb: *i32, info: *i32) = F.cx_getrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
+    getri(n: *i32, a: *Complex[F], lda: *i32, ipiv: *i32, work: *Complex[F], lwork: *i32, info: *i32) = F.cx_getri(n, a, lda, ipiv, work, lwork, info)
+    gecon(norm: *u8, n: *i32, a: *Complex[F], lda: *i32, anorm: *F, rcond: *F, work: *Complex[F], rwork: *F, iwork: *i32, info: *i32) = F.cx_gecon(norm, n, a, lda, anorm, rcond, work, rwork, info)
+    potrf(uplo: *u8, n: *i32, a: *Complex[F], lda: *i32, info: *i32) = F.cx_potrf(uplo, n, a, lda, info)
+    potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *Complex[F], lda: *i32, b: *Complex[F], ldb: *i32, info: *i32) = F.cx_potrs(uplo, n, nrhs, a, lda, b, ldb, info)
+    geqrf(m: *i32, n: *i32, a: *Complex[F], lda: *i32, tau: *Complex[F], work: *Complex[F], lwork: *i32, info: *i32) = F.cx_geqrf(m, n, a, lda, tau, work, lwork, info)
+    ungqr(m: *i32, n: *i32, k: *i32, a: *Complex[F], lda: *i32, tau: *Complex[F], work: *Complex[F], lwork: *i32, info: *i32) = F.cx_ungqr(m, n, k, a, lda, tau, work, lwork, info)
+    gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *Complex[F], lda: *i32, b: *Complex[F], ldb: *i32, work: *Complex[F], lwork: *i32, info: *i32) = F.cx_gels(trans, m, n, nrhs, a, lda, b, ldb, work, lwork, info)
+    gelsd(m: *i32, n: *i32, nrhs: *i32, a: *Complex[F], lda: *i32, b: *Complex[F], ldb: *i32, s: *F, rcond: *F, rank: *i32, work: *Complex[F], lwork: *i32, rwork: *F, iwork: *i32, info: *i32) = F.cx_gelsd(m, n, nrhs, a, lda, b, ldb, s, rcond, rank, work, lwork, rwork, iwork, info)
+    geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *Complex[F], lda: *i32, w: *Complex[F], wr: *F, wi: *F, vl: *Complex[F], ldvl: *i32, vr: *Complex[F], ldvr: *i32, work: *Complex[F], lwork: *i32, rwork: *F, info: *i32) = F.cx_geev(jobvl, jobvr, n, a, lda, w, vl, ldvl, vr, ldvr, work, lwork, rwork, info)
+    heevd(jobz: *u8, uplo: *u8, n: *i32, a: *Complex[F], lda: *i32, w: *F, work: *Complex[F], lwork: *i32, rwork: *F, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32) = F.cx_heevd(jobz, uplo, n, a, lda, w, work, lwork, rwork, lrwork, iwork, liwork, info)
+    gesdd(jobz: *u8, m: *i32, n: *i32, a: *Complex[F], lda: *i32, s: *F, u: *Complex[F], ldu: *i32, vt: *Complex[F], ldvt: *i32, work: *Complex[F], lwork: *i32, rwork: *F, iwork: *i32, info: *i32) = F.cx_gesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, iwork, info)
+    gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Complex[F], lda: *i32, s: *F, u: *Complex[F], ldu: *i32, vt: *Complex[F], ldvt: *i32, work: *Complex[F], lwork: *i32, rwork: *F, info: *i32) = F.cx_gesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, info)
+    trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Complex[F], lda: *i32, b: *Complex[F], ldb: *i32, info: *i32) = F.cx_trtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb, info)
+
+// -- The widths -----------------------------------------------------------------------------------
+
+impl Width for f32
+    // `slamch`'s values, from `f32`'s own constants: see `c.sysl` for why `slamch` is not called.
+    machine(cmach: u8) -> f32 = cmach match
+        'E' -> 5.9604645e-8
+        'S' -> 1.1754944e-38
+        'B' -> 2.0
+        'P' -> 1.1920929e-7
+        'N' -> 24.0
+        'R' -> 1.0
+        'M' -> -125.0
+        'U' -> 1.1754944e-38
+        'L' -> 128.0
+        'O' -> 3.4028235e38
+        _ -> 0.0
+    to_count(self) -> usize = if self < 1.0 then 1 else usize(self)
+    to_real(self) -> real = real(self)
+    of_real64(x: real) -> f32 = f32(x)
+
+    cx_prefix() -> string = "c"
+    cx_gesv(n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, ipiv: *i32, b: *Complex[f32], ldb: *i32, info: *i32) = c.cgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+    cx_getrf(m: *i32, n: *i32, a: *Complex[f32], lda: *i32, ipiv: *i32, info: *i32) = c.cgetrf(m, n, a, lda, ipiv, info)
+    cx_getrs(trans: *u8, n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, ipiv: *i32, b: *Complex[f32], ldb: *i32, info: *i32) = c.cgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info, 1)
+    cx_getri(n: *i32, a: *Complex[f32], lda: *i32, ipiv: *i32, work: *Complex[f32], lwork: *i32, info: *i32) = c.cgetri(n, a, lda, ipiv, work, lwork, info)
+    cx_gecon(norm: *u8, n: *i32, a: *Complex[f32], lda: *i32, anorm: *f32, rcond: *f32, work: *Complex[f32], rwork: *f32, info: *i32) = c.cgecon(norm, n, a, lda, anorm, rcond, work, rwork, info, 1)
+    cx_potrf(uplo: *u8, n: *i32, a: *Complex[f32], lda: *i32, info: *i32) = c.cpotrf(uplo, n, a, lda, info, 1)
+    cx_potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, b: *Complex[f32], ldb: *i32, info: *i32) = c.cpotrs(uplo, n, nrhs, a, lda, b, ldb, info, 1)
+    cx_geqrf(m: *i32, n: *i32, a: *Complex[f32], lda: *i32, tau: *Complex[f32], work: *Complex[f32], lwork: *i32, info: *i32) = c.cgeqrf(m, n, a, lda, tau, work, lwork, info)
+    cx_ungqr(m: *i32, n: *i32, k: *i32, a: *Complex[f32], lda: *i32, tau: *Complex[f32], work: *Complex[f32], lwork: *i32, info: *i32) = c.cungqr(m, n, k, a, lda, tau, work, lwork, info)
+    cx_gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, b: *Complex[f32], ldb: *i32, work: *Complex[f32], lwork: *i32, info: *i32) = c.cgels(trans, m, n, nrhs, a, lda, b, ldb, work, lwork, info, 1)
+    cx_gelsd(m: *i32, n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, b: *Complex[f32], ldb: *i32, s: *f32, rcond: *f32, rank: *i32, work: *Complex[f32], lwork: *i32, rwork: *f32, iwork: *i32, info: *i32) = c.cgelsd(m, n, nrhs, a, lda, b, ldb, s, rcond, rank, work, lwork, rwork, iwork, info)
+    cx_geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *Complex[f32], lda: *i32, w: *Complex[f32], vl: *Complex[f32], ldvl: *i32, vr: *Complex[f32], ldvr: *i32, work: *Complex[f32], lwork: *i32, rwork: *f32, info: *i32) = c.cgeev(jobvl, jobvr, n, a, lda, w, vl, ldvl, vr, ldvr, work, lwork, rwork, info, 1, 1)
+    cx_heevd(jobz: *u8, uplo: *u8, n: *i32, a: *Complex[f32], lda: *i32, w: *f32, work: *Complex[f32], lwork: *i32, rwork: *f32, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32) = c.cheevd(jobz, uplo, n, a, lda, w, work, lwork, rwork, lrwork, iwork, liwork, info, 1, 1)
+    cx_gesdd(jobz: *u8, m: *i32, n: *i32, a: *Complex[f32], lda: *i32, s: *f32, u: *Complex[f32], ldu: *i32, vt: *Complex[f32], ldvt: *i32, work: *Complex[f32], lwork: *i32, rwork: *f32, iwork: *i32, info: *i32) = c.cgesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, iwork, info, 1)
+    cx_gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Complex[f32], lda: *i32, s: *f32, u: *Complex[f32], ldu: *i32, vt: *Complex[f32], ldvt: *i32, work: *Complex[f32], lwork: *i32, rwork: *f32, info: *i32) = c.cgesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, info, 1, 1)
+    cx_trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, b: *Complex[f32], ldb: *i32, info: *i32) = c.ctrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb, info, 1, 1, 1)
+
+impl Width for real
+    machine(cmach: u8) -> real = c.dlamch(&cmach, 1)
+    to_count(self) -> usize = if self < 1.0 then 1 else usize(self)
+    to_real(self) -> real = self
+    of_real64(x: real) -> real = x
+
+    cx_prefix() -> string = "z"
+    cx_gesv(n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, ipiv: *i32, b: *Complex[real], ldb: *i32, info: *i32) = c.zgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+    cx_getrf(m: *i32, n: *i32, a: *Complex[real], lda: *i32, ipiv: *i32, info: *i32) = c.zgetrf(m, n, a, lda, ipiv, info)
+    cx_getrs(trans: *u8, n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, ipiv: *i32, b: *Complex[real], ldb: *i32, info: *i32) = c.zgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info, 1)
+    cx_getri(n: *i32, a: *Complex[real], lda: *i32, ipiv: *i32, work: *Complex[real], lwork: *i32, info: *i32) = c.zgetri(n, a, lda, ipiv, work, lwork, info)
+    cx_gecon(norm: *u8, n: *i32, a: *Complex[real], lda: *i32, anorm: *real, rcond: *real, work: *Complex[real], rwork: *real, info: *i32) = c.zgecon(norm, n, a, lda, anorm, rcond, work, rwork, info, 1)
+    cx_potrf(uplo: *u8, n: *i32, a: *Complex[real], lda: *i32, info: *i32) = c.zpotrf(uplo, n, a, lda, info, 1)
+    cx_potrs(uplo: *u8, n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, b: *Complex[real], ldb: *i32, info: *i32) = c.zpotrs(uplo, n, nrhs, a, lda, b, ldb, info, 1)
+    cx_geqrf(m: *i32, n: *i32, a: *Complex[real], lda: *i32, tau: *Complex[real], work: *Complex[real], lwork: *i32, info: *i32) = c.zgeqrf(m, n, a, lda, tau, work, lwork, info)
+    cx_ungqr(m: *i32, n: *i32, k: *i32, a: *Complex[real], lda: *i32, tau: *Complex[real], work: *Complex[real], lwork: *i32, info: *i32) = c.zungqr(m, n, k, a, lda, tau, work, lwork, info)
+    cx_gels(trans: *u8, m: *i32, n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, b: *Complex[real], ldb: *i32, work: *Complex[real], lwork: *i32, info: *i32) = c.zgels(trans, m, n, nrhs, a, lda, b, ldb, work, lwork, info, 1)
+    cx_gelsd(m: *i32, n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, b: *Complex[real], ldb: *i32, s: *real, rcond: *real, rank: *i32, work: *Complex[real], lwork: *i32, rwork: *real, iwork: *i32, info: *i32) = c.zgelsd(m, n, nrhs, a, lda, b, ldb, s, rcond, rank, work, lwork, rwork, iwork, info)
+    cx_geev(jobvl: *u8, jobvr: *u8, n: *i32, a: *Complex[real], lda: *i32, w: *Complex[real], vl: *Complex[real], ldvl: *i32, vr: *Complex[real], ldvr: *i32, work: *Complex[real], lwork: *i32, rwork: *real, info: *i32) = c.zgeev(jobvl, jobvr, n, a, lda, w, vl, ldvl, vr, ldvr, work, lwork, rwork, info, 1, 1)
+    cx_heevd(jobz: *u8, uplo: *u8, n: *i32, a: *Complex[real], lda: *i32, w: *real, work: *Complex[real], lwork: *i32, rwork: *real, lrwork: *i32, iwork: *i32, liwork: *i32, info: *i32) = c.zheevd(jobz, uplo, n, a, lda, w, work, lwork, rwork, lrwork, iwork, liwork, info, 1, 1)
+    cx_gesdd(jobz: *u8, m: *i32, n: *i32, a: *Complex[real], lda: *i32, s: *real, u: *Complex[real], ldu: *i32, vt: *Complex[real], ldvt: *i32, work: *Complex[real], lwork: *i32, rwork: *real, iwork: *i32, info: *i32) = c.zgesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, iwork, info, 1)
+    cx_gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Complex[real], lda: *i32, s: *real, u: *Complex[real], ldu: *i32, vt: *Complex[real], ldvt: *i32, work: *Complex[real], lwork: *i32, rwork: *real, info: *i32) = c.zgesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, info, 1, 1)
+    cx_trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, b: *Complex[real], ldb: *i32, info: *i32) = c.ztrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb, info, 1, 1, 1)

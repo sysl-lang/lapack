@@ -1,0 +1,201 @@
+module sh.sysl.lapack
+@tests
+
+import sysl.math.complex.Complex
+
+// LU, Cholesky, QR and least squares. The oracles: factors worked by hand, a Cholesky factor chosen
+// first and multiplied out, products recomputed here (‖A − Q R‖, QᴴQ = I), and least-squares answers
+// with a closed form — a line through collinear points, the mean of inconsistent equations, the
+// minimum-norm point of an underdetermined one.
+
+// -- lu -------------------------------------------------------------------------------------------
+
+@test
+lu_of_a_2x2_is_the_hand_worked_factorization() =
+    // A = [[1, 2], [3, 4]]: row 2 is the pivot, l₂₁ = 1/3, u₂₂ = 2 − 4/3 = 2/3.
+    val f = ok(lu(from_rows[real](2, 2, [1.0, 2.0, 3.0, 4.0])), "lu")
+
+    assert_mat(f.l, from_rows(2, 2, [1.0, 0.0, 1.0 / 3.0, 1.0]), 1.0e-16, "L")
+    assert_mat(f.u, from_rows(2, 2, [3.0, 4.0, 0.0, 2.0 / 3.0]), 1.0e-15, "U")
+    assert_eq(f.perm[0], 1)
+    assert_eq(f.perm[1], 0)
+    assert_eq(f.ipiv[0], 2)
+
+private lu_permutes[T: Scalar](tol: real, m: usize, n: usize, xs: []const real)
+    val a: Mat[T] = from_rows(m, n, xs)
+    val f = ok(lu(a), "lu")
+    val k = if m < n then m else n
+    val prod = matmul(f.l, f.u)
+
+    assert_eq(f.l.rows, m)
+    assert_eq(f.l.cols, k)
+    assert_eq(f.u.rows, k)
+    assert_eq(f.u.cols, n)
+
+    for i in 0..<m
+        for j in 0..<n do assert(gap(a.at(f.perm[i], j), prod.at(i, j)) <= tol, s"${T.prefix()}getrf A[p[$i], $j] vs (L U)[$i, $j]")
+
+@test
+lu_of_any_shape_satisfies_a_of_p_equals_l_u() =
+    val tall = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 1.0, -1.0, 2.0]
+    val wide = [2.0, -1.0, 0.0, 4.0, 1.0, 3.0, 5.0, -2.0, 7.0, 0.5, 1.0, 1.0]
+
+    lu_permutes[f32](1.0e-5, 4, 3, tall)
+    lu_permutes[real](1.0e-14, 4, 3, tall)
+    lu_permutes[Complex[f32]](1.0e-5, 3, 4, wide)
+    lu_permutes[Complex[real]](1.0e-14, 3, 4, wide)
+
+@test
+lu_of_a_singular_matrix_is_still_a_factorization() =
+    val f = ok(lu(from_rows[real](2, 2, [1.0, 2.0, 2.0, 4.0])), "lu singular")
+
+    assert_eq(f.u.at(1, 1), 0.0)
+
+// -- chol -----------------------------------------------------------------------------------------
+
+// L = [[2,0,0],[6,1,0],[−8,5,3]] multiplied out: A = L Lᵀ.
+private val SPD: [9]real = [4.0, 12.0, -16.0, 12.0, 37.0, -43.0, -16.0, -43.0, 98.0]
+private val SPD_L: [9]real = [2.0, 0.0, 0.0, 6.0, 1.0, 0.0, -8.0, 5.0, 3.0]
+
+private chol_recovers[T: Scalar](tol: real)
+    val a: Mat[T] = from_rows(3, 3, SPD)
+    val l: Mat[T] = from_rows(3, 3, SPD_L)
+
+    assert_mat(ok(chol(a), "chol"), l, tol, s"${T.prefix()}potrf L")
+    assert_mat(ok(chol(a, upper = true), "chol upper"), adjoint(l), tol, s"${T.prefix()}potrf U")
+
+@test
+chol_recovers_the_factor_it_was_built_from() =
+    chol_recovers[f32](1.0e-5)
+    chol_recovers[real](1.0e-14)
+    chol_recovers[Complex[f32]](1.0e-5)
+    chol_recovers[Complex[real]](1.0e-14)
+
+@test
+chol_of_a_hermitian_matrix_has_a_complex_factor() =
+    // L = [[2, 0], [−i, 2]]: L Lᴴ = [[4, 2i], [−2i, 5]].
+    val a: Mat[Complex[real]] = from_rows_c(2, 2, [4.0, 0.0, 0.0, 2.0, 0.0, -2.0, 5.0, 0.0])
+
+    assert_mat(ok(chol(a), "zpotrf"), from_rows_c(2, 2, [2.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0]), 1.0e-15, "zpotrf L")
+
+@test
+chol_reads_one_triangle_only() =
+    // The upper triangle is garbage; the lower one is SPD's.
+    val a: Mat[real] = from_rows(3, 3, [4.0, 99.0, 99.0, 12.0, 37.0, 99.0, -16.0, -43.0, 98.0])
+
+    assert_mat(ok(chol(a), "chol lower"), from_rows(3, 3, SPD_L), 1.0e-14, "lower only")
+
+@test
+chol_reports_the_leading_minor_that_is_not_positive_definite() =
+    val e = err(chol(from_rows[real](2, 2, [1.0, 2.0, 2.0, 1.0])), "indefinite")
+
+    assert(e.cause == NotPositiveDefinite(2), s"$e")
+    assert_eq(e.to_string(), "chol: dpotrf: matrix is not positive definite (leading minor 2)")
+
+    val first = err(chol(from_rows[f32](2, 2, [-1.0, 0.0, 0.0, 1.0])), "negative")
+
+    assert(first.cause == NotPositiveDefinite(1), s"$first")
+    assert_eq(first.routine, "spotrf")
+
+    val s = err(chol(zeros[real](3, 2)), "rect chol")
+
+    assert(s.cause == Shape("the matrix is not square (3 × 2)"), s"$s")
+
+@test
+chol_solve_solves_with_the_factor() =
+    val a: Mat[real] = from_rows(3, 3, SPD)
+    val b: Mat[real] = from_rows(3, 1, [1.0, 2.0, 3.0])
+
+    assert_mat(matmul(a, ok(chol_solve(ok(chol(a), "L"), b), "potrs L")), b, 1.0e-11, "A x = b, lower")
+    assert_mat(matmul(a, ok(chol_solve(ok(chol(a, upper = true), "U"), b, upper = true), "potrs U")), b, 1.0e-11, "A x = b, upper")
+
+// -- qr -------------------------------------------------------------------------------------------
+
+private qr_holds[T: Scalar](tol: real, m: usize, n: usize, xs: []const real)
+    val a: Mat[T] = from_rows_c(m, n, xs)
+    val f = ok(qr(a), "qr")
+    val k = if m < n then m else n
+
+    assert_eq(f.q.rows, m)
+    assert_eq(f.q.cols, k)
+    assert_eq(f.r.rows, k)
+    assert_eq(f.r.cols, n)
+    assert_mat(matmul(f.q, f.r), a, tol, s"${T.prefix()} ‖A − Q R‖")
+    assert_mat(matmul(adjoint(f.q), f.q), eye(k), tol, s"${T.prefix()} QᴴQ = I")
+
+    for j in 0..<n
+        for i in j + 1..<k do assert_eq(gap(f.r.at(i, j), T.zero()), 0.0)
+
+@test
+qr_reproduces_the_matrix_with_orthonormal_q_and_upper_r() =
+    // 4 × 3 and 3 × 4, real parts and imaginary parts both non-zero.
+    val tall = [1.0, 0.5, 2.0, -1.0, 3.0, 0.0, 4.0, 2.0, -2.0, 1.0, 0.0, 1.0, 5.0, 0.0, 1.0, 1.0, 2.0, -3.0, 0.5, 0.5, 1.0, 1.0, 1.0, -1.0]
+    val wide = [2.0, 1.0, 0.0, 0.0, 1.0, -1.0, 3.0, 2.0, 1.0, 0.0, 4.0, 1.0, -2.0, 0.0, 1.0, 1.0, 0.0, 3.0, 2.0, -2.0, 1.0, 0.0, 5.0, 0.5]
+
+    qr_holds[f32](1.0e-5, 4, 3, tall)
+    qr_holds[real](1.0e-14, 4, 3, tall)
+    qr_holds[Complex[f32]](1.0e-5, 4, 3, tall)
+    qr_holds[Complex[real]](1.0e-14, 4, 3, tall)
+    qr_holds[real](1.0e-14, 3, 4, wide)
+    qr_holds[Complex[real]](1.0e-14, 3, 4, wide)
+
+@test
+qr_of_a_single_column_is_its_norm() =
+    // (3, 4) has norm 5: Q = ±(0.6, 0.8), R = ±5, the signs together.
+    val f = ok(qr(from_rows[real](2, 1, [3.0, 4.0])), "qr")
+    val r = f.r.at(0, 0)
+    val sign = if r < 0.0 then -1.0 else 1.0
+
+    assert_close(r * sign, 5.0, 1.0e-15, "|R|")
+    assert_close(f.q.at(0, 0) * sign, 0.6, 1.0e-15, "Q0")
+    assert_close(f.q.at(1, 0) * sign, 0.8, 1.0e-15, "Q1")
+
+// -- lstsq ----------------------------------------------------------------------------------------
+
+@test
+lstsq_fits_a_line_through_collinear_points_exactly() =
+    // (0, 1), (1, 3), (2, 5), (3, 7) lie on y = 1 + 2x.
+    val a: Mat[real] = from_rows(4, 2, [1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0])
+    val x = ok(lstsq(a, from_rows(4, 1, [1.0, 3.0, 5.0, 7.0])), "lstsq")
+
+    assert_eq(x.rows, 2)
+    assert_mat(x, from_rows(2, 1, [1.0, 2.0]), 1.0e-14, "dgelsd line")
+
+@test
+lstsq_of_inconsistent_equations_is_their_mean() =
+    // x = 1 and x = 3: the least-squares x is 2, at every type.
+    assert_close(ok(lstsq(from_rows[real](2, 1, [1.0, 1.0]), from_rows(2, 1, [1.0, 3.0])), "d").at(0, 0), 2.0, 1.0e-15, "dgelsd")
+    assert_close(real(ok(lstsq(from_rows[f32](2, 1, [1.0, 1.0]), from_rows(2, 1, [1.0, 3.0])), "s").at(0, 0)), 2.0, 1.0e-6, "sgelsd")
+    assert_complex(ok(lstsq(from_rows[Complex[real]](2, 1, [1.0, 1.0]), from_rows_c(2, 1, [1.0, 1.0, 3.0, -1.0])), "z").at(0, 0), 2.0, 0.0, 1.0e-15, "zgelsd")
+    assert_complex(ok(lstsq(from_rows[Complex[f32]](2, 1, [1.0, 1.0]), from_rows_c(2, 1, [1.0, 1.0, 3.0, -1.0])), "c").at(0, 0), 2.0, 0.0, 1.0e-6, "cgelsd")
+
+@test
+lstsq_answers_the_minimum_norm_solution_of_an_underdetermined_system() =
+    // x₁ + x₂ = 2 has a line of solutions; the shortest is (1, 1).
+    val x = ok(lstsq(from_rows[real](1, 2, [1.0, 1.0]), from_rows(1, 1, [2.0])), "under")
+
+    assert_eq(x.rows, 2)
+    assert_mat(x, from_rows(2, 1, [1.0, 1.0]), 1.0e-15, "min norm")
+
+@test
+lstsq_of_a_rank_deficient_matrix_does_not_fail() =
+    // [[1, 1], [1, 1]] has rank 1; the minimum-norm solution of x₁ + x₂ = 2 (twice) is (1, 1).
+    val x = ok(lstsq(from_rows[real](2, 2, [1.0, 1.0, 1.0, 1.0]), from_rows(2, 2, [2.0, 4.0, 2.0, 4.0])), "rank 1")
+
+    assert_mat(x, from_rows(2, 2, [1.0, 2.0, 1.0, 2.0]), 1.0e-14, "rank-deficient min norm")
+
+@test
+lstsq_refuses_a_right_hand_side_of_the_wrong_height() =
+    val e = err(lstsq(zeros[real](3, 2), zeros[real](2, 1)), "lstsq rows")
+
+    assert(e.cause == Shape("the right-hand side has 2 rows; the matrix has 3"), s"$e")
+    assert_eq(e.function, "lstsq")
+
+@test
+lstsq_treats_singular_values_below_machine_precision_as_zero() =
+    // [[0.1, 0.3], [0.2, 0.6]] is u vᵀ with u = (1, 2), v = (0.1, 0.3) — rank one exactly, and nearly
+    // so once rounded, leaving a σ₂ far below ε·σ₁. A⁺ b = v (uᵀ b) / (|u|² |v|²), which at b = (1, 0)
+    // is (0.2, 0.6); keeping σ₂ would answer something of order 1/σ₂ instead.
+    val x = ok(lstsq(from_rows[real](2, 2, [0.1, 0.3, 0.2, 0.6]), from_rows(2, 1, [1.0, 0.0])), "rcond")
+
+    assert_mat(x, from_rows(2, 1, [0.2, 0.6]), 1.0e-12, "pseudo-inverse solution")

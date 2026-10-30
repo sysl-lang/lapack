@@ -1,0 +1,193 @@
+module sh.sysl.lapack
+@tests
+
+import sysl.math.complex.Complex
+
+// Eigenvalues and the SVD. The oracles: a rotation's eigenvalues cos θ ± i sin θ, a triangular
+// matrix's diagonal, the second-difference matrix's spectrum 2 − 2 cos(kπ/(n+1)), a 2 × 2 Hermitian
+// matrix's 1 and 3, a rank-one matrix's single singular value |u|·|v|; and the residuals ‖A V − V Λ‖,
+// ‖A − U Σ Vᴴ‖, VᴴV = I recomputed here.
+
+// -- eigvals, eig ---------------------------------------------------------------------------------
+
+private rotation[T: Scalar](theta: real) -> Mat[T] =
+    from_rows(2, 2, [theta.cos(), -theta.sin(), theta.sin(), theta.cos()])
+
+@test
+eigvals_of_a_rotation_are_cos_plus_and_minus_i_sin() =
+    val theta = 0.3
+    val d = ok(eigvals(rotation[real](theta)), "deigvals")
+
+    assert_eq(d.len, 2)
+    // A conjugate pair is adjacent with its positive imaginary part first.
+    assert_complex(d[0], theta.cos(), theta.sin(), 1.0e-15, "λ₁")
+    assert_complex(d[1], theta.cos(), -theta.sin(), 1.0e-15, "λ₂")
+
+    val s = ok(eigvals(rotation[f32](theta)), "seigvals")
+
+    assert_complex(s[0], theta.cos(), theta.sin(), 1.0e-6, "sλ₁")
+    assert_complex(s[1], theta.cos(), -theta.sin(), 1.0e-6, "sλ₂")
+
+@test
+eigvals_of_a_complex_triangular_matrix_are_its_diagonal() =
+    val a: Mat[Complex[real]] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 0.0, 0.0, 3.0, -1.0])
+    val v = ok(eigvals(a), "zeigvals")
+
+    assert_complex(v[0], 1.0, 1.0, 1.0e-15, "λ₁")
+    assert_complex(v[1], 3.0, -1.0, 1.0e-15, "λ₂")
+
+private eig_residual[T: Scalar](tol: real, a: Mat[T])
+    val e = ok(eig(a), "eig")
+    val n = a.rows
+
+    assert_eq(e.vectors.rows, n)
+    assert_eq(e.vectors.cols, n)
+
+    for j in 0..<n
+        var norm = 0.0
+
+        for i in 0..<n
+            // (A v)ᵢ against λ vᵢ, A's elements made complex.
+            var av = Complex(0.0, 0.0)
+
+            for k in 0..<n
+                val v = e.vectors.at(k, j)
+
+                av = av + Complex(T.real_part(a.at(i, k)).to_real(), T.imag_part(a.at(i, k)).to_real()) * Complex(v.re.to_real(), v.im.to_real())
+
+            val lv = Complex(e.values[j].re.to_real(), e.values[j].im.to_real()) * Complex(e.vectors.at(i, j).re.to_real(), e.vectors.at(i, j).im.to_real())
+
+            assert((av - lv).abs() <= tol, s"${T.prefix()}geev ‖A v − λ v‖ column $j row $i: ${(av - lv).abs()}")
+            norm = norm + e.vectors.at(i, j).abs().to_real() * e.vectors.at(i, j).abs().to_real()
+
+        assert_close(norm, 1.0, tol, s"${T.prefix()}geev ‖v$j‖")
+
+@test
+eig_vectors_satisfy_a_v_equals_lambda_v_with_unit_norm() =
+    // A real matrix with one real eigenvalue and a complex pair, so both unpacking paths run.
+    val xs = [2.0, -1.0, 0.0, 1.0, 2.0, 0.5, 0.0, 0.0, 3.0]
+    val c = [1.0, 2.0, 0.5, 0.0, 0.0, -1.0, 2.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 3.0, 0.0, 1.0, -1.0]
+
+    eig_residual[real](1.0e-14, from_rows(3, 3, xs))
+    eig_residual[f32](1.0e-5, from_rows(3, 3, xs))
+    eig_residual[Complex[real]](1.0e-14, from_rows_c(3, 3, c))
+    eig_residual[Complex[f32]](1.0e-5, from_rows_c(3, 3, c))
+    eig_residual[real](1.0e-15, rotation(0.7))
+
+@test
+eigvals_refuses_a_non_square_matrix() =
+    val e = err(eigvals(zeros[real](2, 3)), "eigvals rect")
+
+    assert(e.cause == Shape("the matrix is not square (2 × 3)"), s"$e")
+    assert_eq(e.function, "eigvals")
+    assert_eq(err(eig(zeros[real](3, 1)), "eig rect").function, "eig")
+
+// -- eigh -----------------------------------------------------------------------------------------
+
+private second_difference[T: Scalar](n: usize) -> Mat[T]
+    val a: Mat[T] = zeros(n, n)
+
+    for i in 0..<n
+        a.set(i, i, T.from_parts(2.0, 0.0))
+
+        if i + 1 < n
+            a.set(i, i + 1, T.from_parts(-1.0, 0.0))
+            a.set(i + 1, i, T.from_parts(-1.0, 0.0))
+
+    a
+
+private eigh_spectrum[T: Scalar](tol: real)
+    val n = 5
+    val a: Mat[T] = second_difference(n)
+    val e = ok(eigh(a), "eigh")
+    val pi = 3.141592653589793
+
+    for k in 0..<n do assert_close(e.values[k].to_real(), 2.0 - 2.0 * (real(k + 1) * pi / real(n + 1)).cos(), tol, s"${T.prefix()} λ$k")
+
+    val lambda: Mat[T] = zeros(n, n)
+
+    for k in 0..<n do lambda.set(k, k, T.of_real(e.values[k]))
+
+    assert_mat(matmul(a, e.vectors), matmul(e.vectors, lambda), tol, s"${T.prefix()} ‖A V − V Λ‖")
+    assert_mat(matmul(adjoint(e.vectors), e.vectors), eye(n), tol, s"${T.prefix()} VᴴV = I")
+
+@test
+eigh_of_the_second_difference_matrix_is_its_closed_form_spectrum() =
+    eigh_spectrum[f32](1.0e-5)
+    eigh_spectrum[real](1.0e-14)
+    eigh_spectrum[Complex[f32]](1.0e-5)
+    eigh_spectrum[Complex[real]](1.0e-14)
+
+@test
+eigh_of_a_hermitian_matrix_is_real_and_ascending() =
+    // [[2, i], [−i, 2]] has eigenvalues 1 and 3.
+    val a: Mat[Complex[real]] = from_rows_c(2, 2, [2.0, 0.0, 0.0, 1.0, 0.0, -1.0, 2.0, 0.0])
+    val e = ok(eigh(a), "zheevd")
+
+    assert_close(e.values[0], 1.0, 1.0e-15, "λ₁")
+    assert_close(e.values[1], 3.0, 1.0e-15, "λ₂")
+
+@test
+eigh_reads_the_lower_triangle_only() =
+    val a: Mat[real] = from_rows(2, 2, [2.0, 99.0, 1.0, 2.0])
+    val e = ok(eigh(a), "dsyevd")
+
+    assert_close(e.values[0], 1.0, 1.0e-15, "λ₁")
+    assert_close(e.values[1], 3.0, 1.0e-15, "λ₂")
+
+// -- svd, svdvals ---------------------------------------------------------------------------------
+
+@test
+svd_of_a_rank_one_matrix_has_one_singular_value() =
+    // u = (1, 2, 2), v = (3, 4): A = u vᵀ has σ₁ = |u|·|v| = 15 and σ₂ = 0.
+    val a: Mat[real] = from_rows(3, 2, [3.0, 4.0, 6.0, 8.0, 6.0, 8.0])
+    val s = ok(svdvals(a), "svdvals")
+
+    assert_eq(s.len, 2)
+    assert_close(s[0], 15.0, 1.0e-13, "σ₁")
+    assert_close(s[1], 0.0, 1.0e-13, "σ₂")
+
+    val f = ok(svd(a), "svd")
+
+    // The first singular vectors are ±u/3 and ±v/5, the signs together.
+    val sign = if f.u.at(0, 0) < 0.0 then -1.0 else 1.0
+
+    assert_close(f.u.at(1, 0) * sign, 2.0 / 3.0, 1.0e-15, "u₁")
+    assert_close(f.v.at(0, 0) * sign, 0.6, 1.0e-15, "v₁")
+    assert_close(f.v.at(1, 0) * sign, 0.8, 1.0e-15, "v₂")
+
+@test
+svdvals_of_a_diagonal_matrix_are_its_absolute_values_descending() =
+    val d: Mat[real] = from_rows(3, 3, [3.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 1.0])
+    val s = ok(svdvals(d), "svdvals diag")
+
+    assert_close(s[0], 5.0, 0.0, "σ₁")
+    assert_close(s[1], 3.0, 0.0, "σ₂")
+    assert_close(s[2], 1.0, 0.0, "σ₃")
+
+    val z = ok(svdvals(from_rows_c[Complex[f32]](1, 1, [0.0, -2.0])), "csvdvals")
+
+    assert_close(real(z[0]), 2.0, 0.0, "|−2i|")
+
+private svd_reproduces[T: Scalar](tol: real, m: usize, n: usize, xs: []const real)
+    val a: Mat[T] = from_rows_c(m, n, xs)
+    val f = ok(svd(a), "svd")
+    val k = if m < n then m else n
+    val sigma: Mat[T] = zeros(k, k)
+
+    for i in 0..<k do sigma.set(i, i, T.of_real(f.s[i]))
+
+    for i in 1..<k do assert(f.s[i - 1].to_real() >= f.s[i].to_real(), "descending")
+
+    assert_mat(matmul(matmul(f.u, sigma), adjoint(f.v)), a, tol, s"${T.prefix()} ‖A − U Σ Vᴴ‖")
+    assert_mat(matmul(adjoint(f.u), f.u), eye(k), tol, s"${T.prefix()} UᴴU = I")
+    assert_mat(matmul(adjoint(f.v), f.v), eye(k), tol, s"${T.prefix()} VᴴV = I")
+
+@test
+svd_reproduces_the_matrix_with_orthonormal_factors() =
+    val xs = [1.0, 0.5, 2.0, -1.0, 3.0, 0.0, 4.0, 2.0, -2.0, 1.0, 0.0, 1.0, 5.0, 0.0, 1.0, 1.0, 2.0, -3.0, 0.5, 0.5, 1.0, 1.0, 1.0, -1.0]
+
+    svd_reproduces[f32](1.0e-5, 4, 3, xs)
+    svd_reproduces[real](1.0e-13, 4, 3, xs)
+    svd_reproduces[Complex[f32]](1.0e-5, 3, 4, xs)
+    svd_reproduces[Complex[real]](1.0e-13, 3, 4, xs)

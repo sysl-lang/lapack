@@ -1,0 +1,323 @@
+module sh.sysl.lapack
+@tests
+
+import sh.sysl.lapack.c
+import sysl.math.complex.Complex
+
+// The raw layer and the edges of the pleasant one: a Fortran routine called by its own name, the
+// routines bound but given no pleasant function (`?gels`, `?gesvd`, `?getrs` transposed, `?lange`),
+// the machine parameters against IEEE 754's own values, the in-place forms working where the matrix
+// lies, and every cause an `Error` can carry.
+
+// -- The raw layer --------------------------------------------------------------------------------
+
+@test
+dgesv_is_callable_by_its_own_name() =
+    // Column-major [[2, 1], [1, 3]], b = (3, 5): x = (0.8, 1.4).
+    var a = [2.0, 1.0, 1.0, 3.0]
+    var b = [3.0, 5.0]
+    var ipiv: [2]i32 = [0, 0]
+    var n: i32 = 2
+    var one: i32 = 1
+    var info: i32 = -99
+
+    c.dgesv(&n, &one, &a[0], &n, &ipiv[0], &b[0], &n, &info)
+
+    assert_eq(info, 0)
+    assert_close(b[0], 0.8, 1.0e-15, "x0")
+    assert_close(b[1], 1.4, 1.0e-15, "x1")
+    assert_eq(ipiv[0], 1)
+
+@test
+dlange_and_zlange_answer_the_norms() =
+    // [[1, −2], [3, 4]]: the 1-norm is the largest column sum, 6; the ∞-norm the largest row sum, 7;
+    // the largest element 4; the Frobenius norm √30.
+    var a = [1.0, 3.0, -2.0, 4.0]
+    var work = [0.0, 0.0]
+    var two: i32 = 2
+
+    assert_eq(c.dlange(&u8('1'), &two, &two, &a[0], &two, &work[0], 1), 6.0)
+    assert_eq(c.dlange(&u8('I'), &two, &two, &a[0], &two, &work[0], 1), 7.0)
+    assert_eq(c.dlange(&u8('M'), &two, &two, &a[0], &two, &work[0], 1), 4.0)
+    assert_close(c.dlange(&u8('F'), &two, &two, &a[0], &two, &work[0], 1), 30.0.sqrt(), 1.0e-15, "‖A‖F")
+
+    var z = [Complex(3.0, 4.0), Complex(0.0, 1.0)]
+    var one: i32 = 1
+
+    assert_close(c.zlange(&u8('1'), &two, &one, &z[0], &two, &work[0], 1), 6.0, 1.0e-15, "‖z‖₁")
+
+private gels_line[T: Scalar](tol: real)
+    // (0, 1), (1, 3), (2, 5) on y = 1 + 2x, solved by QR.
+    val a: Mat[T] = from_rows(3, 2, [1.0, 0.0, 1.0, 1.0, 1.0, 2.0])
+    val b: Mat[T] = from_rows(3, 1, [1.0, 3.0, 5.0])
+    var m: i32 = 3
+    var n: i32 = 2
+    var nrhs: i32 = 1
+    var query = T.zero()
+    var lwork: i32 = -1
+    var info: i32 = 0
+
+    T.gels(&u8('N'), &m, &n, &nrhs, a.ptr(), &m, b.ptr(), &m, &query, &lwork, &info)
+
+    var work: []T = [T.zero(); T.real_part(query).to_count()]
+
+    lwork = i32(work.len)
+    T.gels(&u8('N'), &m, &n, &nrhs, a.ptr(), &m, b.ptr(), &m, &work[0], &lwork, &info)
+
+    assert_eq(info, 0)
+    assert(gap(b.at(0, 0), T.from_parts(1.0, 0.0)) <= tol, s"${T.prefix()}gels intercept")
+    assert(gap(b.at(1, 0), T.from_parts(2.0, 0.0)) <= tol, s"${T.prefix()}gels slope")
+
+@test
+gels_fits_a_line_at_every_type() =
+    gels_line[f32](1.0e-5)
+    gels_line[real](1.0e-14)
+    gels_line[Complex[f32]](1.0e-5)
+    gels_line[Complex[real]](1.0e-14)
+
+private gesvd_diagonal[T: Scalar](tol: real)
+    val a: Mat[T] = from_rows(2, 2, [0.0, 2.0, -7.0, 0.0])
+    var s: []T::Real = [0.0; 2]
+    var dummy = [T.zero()]
+    var rwork: []T::Real = [0.0; 10]
+    var two: i32 = 2
+    var one: i32 = 1
+    var query = T.zero()
+    var lwork: i32 = -1
+    var info: i32 = 0
+
+    T.gesvd(&u8('N'), &u8('N'), &two, &two, a.ptr(), &two, &s[0], &dummy[0], &one, &dummy[0], &one, &query, &lwork, &rwork[0], &info)
+
+    var work: []T = [T.zero(); T.real_part(query).to_count()]
+
+    lwork = i32(work.len)
+    T.gesvd(&u8('N'), &u8('N'), &two, &two, a.ptr(), &two, &s[0], &dummy[0], &one, &dummy[0], &one, &work[0], &lwork, &rwork[0], &info)
+
+    assert_eq(info, 0)
+    assert_close(s[0].to_real(), 7.0, tol, s"${T.prefix()}gesvd σ₁")
+    assert_close(s[1].to_real(), 2.0, tol, s"${T.prefix()}gesvd σ₂")
+
+@test
+gesvd_answers_the_singular_values_at_every_type() =
+    gesvd_diagonal[f32](1.0e-5)
+    gesvd_diagonal[real](1.0e-14)
+    gesvd_diagonal[Complex[f32]](1.0e-5)
+    gesvd_diagonal[Complex[real]](1.0e-14)
+
+@test
+getrs_solves_the_transposed_system_from_one_factorization() =
+    // A = [[1, 2], [3, 4]]: Aᵀ x = (4, 6) at x = (1, 1).
+    val f = ok(lu(from_rows[real](2, 2, [1.0, 2.0, 3.0, 4.0])), "lu")
+    val b: Mat[real] = from_rows(2, 1, [4.0, 6.0])
+    var two: i32 = 2
+    var one: i32 = 1
+    var info: i32 = 0
+
+    real.getrs(&u8('T'), &two, &one, f.factors.ptr(), &two, &f.ipiv[0], b.ptr(), &two, &info)
+
+    assert_eq(info, 0)
+    assert_mat(b, from_rows(2, 1, [1.0, 1.0]), 1.0e-15, "Aᵀ x = b")
+
+// -- Machine parameters ---------------------------------------------------------------------------
+
+@test
+lamch_answers_ieee_754_doubles_values() =
+    assert_eq(lamch[real](u8('E')), 1.1102230246251565e-16)
+    assert_eq(lamch[real](u8('P')), real.epsilon())
+    assert_eq(lamch[real](u8('S')), 2.2250738585072014e-308)
+    assert_eq(lamch[real](u8('B')), 2.0)
+    assert_eq(lamch[real](u8('N')), 53.0)
+    assert_eq(lamch[real](u8('R')), 1.0)
+    assert_eq(lamch[real](u8('M')), -1021.0)
+    assert_eq(lamch[real](u8('U')), 2.2250738585072014e-308)
+    assert_eq(lamch[real](u8('L')), 1024.0)
+    assert_eq(lamch[real](u8('O')), real.max_value())
+
+@test
+lamch_answers_ieee_754_singles_values() =
+    assert_eq(lamch[f32](u8('P')), f32.epsilon())
+    assert_eq(lamch[f32](u8('E')), f32.epsilon() / 2.0)
+    assert_eq(lamch[f32](u8('O')), f32.max_value())
+    assert_eq(lamch[f32](u8('N')), 24.0)
+    assert_eq(lamch[f32](u8('M')), -125.0)
+    assert_eq(lamch[f32](u8('L')), 128.0)
+    assert_eq(real(lamch[f32](u8('S'))), 1.1754943508222875e-38)
+    assert_eq(lamch[f32](u8('X')), 0.0)
+
+// -- In place -------------------------------------------------------------------------------------
+
+@test
+solve_inplace_works_where_the_matrix_lies_and_answers_info() =
+    // The 2 × 2 system sits in a 3-row buffer; the third row is a sentinel nothing may touch.
+    var store = [2.0, 1.0, -7.0, 1.0, 3.0, -7.0]
+    var rhs = [3.0, 5.0]
+    var ipiv: []i32 = [0, 0]
+    val a = strided(store, 2, 2, 3)
+
+    assert_eq(ok(solve_inplace(a, ipiv, vector(rhs)), "solve_inplace"), 0)
+    assert_close(rhs[0], 0.8, 1.0e-15, "x0")
+    assert_close(rhs[1], 1.4, 1.0e-15, "x1")
+    assert_eq(store[2], -7.0)
+    assert_eq(store[5], -7.0)
+    assert_eq(store[0], 2.0)
+
+    // A singular matrix is not an error here: the info says where.
+    var s = [1.0, 2.0, 2.0, 4.0]
+
+    assert_eq(ok(solve_inplace(mat(s, 2, 2), ipiv, vector([1.0, 1.0])), "singular inplace"), 2)
+
+    val short: []i32 = [0]
+    val e = err(solve_inplace(mat(s, 2, 2), short, vector([1.0, 1.0])), "short ipiv")
+
+    assert(e.cause == Shape("ipiv holds 1 pivots; the matrix has 2 rows"), s"$e")
+
+@test
+lu_inplace_leaves_l_below_and_u_on_and_above() =
+    var a = [1.0, 3.0, 2.0, 4.0]
+    var ipiv: []i32 = [0, 0]
+
+    assert_eq(ok(lu_inplace(mat(a, 2, 2), ipiv), "lu_inplace"), 0)
+    assert_eq(a[0], 3.0)
+    assert_close(a[1], 1.0 / 3.0, 1.0e-16, "l₂₁")
+    assert_eq(a[2], 4.0)
+    assert_close(a[3], 2.0 / 3.0, 1.0e-15, "u₂₂")
+    assert_eq(ipiv[0], 2)
+
+    var z: []Complex[real] = [Complex(1.0, 0.0), Complex(2.0, 0.0), Complex(2.0, 0.0), Complex(4.0, 0.0)]
+
+    assert_eq(ok(lu_inplace(mat(z, 2, 2), ipiv), "zlu_inplace"), 2)
+
+@test
+chol_inplace_writes_one_triangle_and_answers_the_failing_minor() =
+    var a = [4.0, 12.0, -16.0, 12.0, 37.0, -43.0, -16.0, -43.0, 98.0]
+
+    assert_eq(ok(chol_inplace(mat(a, 3, 3), upper = true), "chol_inplace"), 0)
+    // U = Lᵀ on and above the diagonal; below it A is as it was.
+    assert_eq(a[0], 2.0)
+    assert_eq(a[3], 6.0)
+    assert_eq(a[4], 1.0)
+    assert_eq(a[1], 12.0)
+    assert_eq(a[2], -16.0)
+
+    var b = [1.0, 2.0, 2.0, 1.0]
+
+    assert_eq(ok(chol_inplace(mat(b, 2, 2)), "indefinite inplace"), 2)
+
+@test
+qr_inplace_writes_r_and_the_reflectors() =
+    var a = [3.0, 4.0]
+    var tau = [0.0]
+
+    assert_eq(ok(qr_inplace(mat(a, 2, 1), tau), "qr_inplace"), 0)
+    assert_close(a[0].abs(), 5.0, 1.0e-15, "|r₁₁|")
+    assert(tau[0] > 0.0, "a reflector was made")
+
+    val e = err(qr_inplace(zeros[real](3, 2), [0.0]), "short tau")
+
+    assert(e.cause == Shape("tau holds 1 elements; min(m, n) is 2"), s"$e")
+
+// -- Views ----------------------------------------------------------------------------------------
+
+@test
+from_ptr_views_storage_this_program_did_not_lay_out_as_a_matrix() =
+    var store = [4.0, 1.0, 0.0, 1.0, 3.0, 0.0]
+    val a = from_ptr(&store[0], 2, 2, 3)
+
+    assert_eq(a.at(1, 1), 3.0)
+    assert_close(ok(det(a), "det through a pointer"), 11.0, 1.0e-14, "det")
+
+    a.set(0, 1, 2.0)
+
+    assert_eq(store[3], 2.0)
+
+@test
+a_column_is_a_view_of_the_storage() =
+    var store = [1.0, 2.0, 9.0, 3.0, 4.0, 9.0]
+    val col = strided(store, 2, 2, 3).column(1)
+
+    assert_eq(col.len, 2)
+    assert_eq(col[0], 3.0)
+    assert_eq(col[1], 4.0)
+
+// -- Errors ---------------------------------------------------------------------------------------
+
+@test
+every_cause_renders_and_answers_its_info() =
+    val conv = Error("eigh", "dsyevd", NoConvergence(3))
+
+    assert_eq(conv.to_string(), "eigh: dsyevd: failed to converge (info 3)")
+    assert_eq(conv.info(), 3)
+
+    val bad = Error("solve", "dgesv", IllegalArgument(4))
+
+    assert_eq(bad.to_string(), "solve: dgesv: illegal value in argument 4")
+    assert_eq(bad.info(), -4)
+    assert_eq(s"$bad", "solve: dgesv: illegal value in argument 4")
+
+@test
+a_negative_info_names_the_argument_and_the_typed_routine() =
+    val e = err(check[Complex[f32]]("qr", "geqrf", -7, Means.Nothing), "negative info")
+
+    assert_eq(e.routine, "cgeqrf")
+    assert(e.cause == IllegalArgument(7), s"$e")
+    assert(check[real]("det", "getrf", 3, Means.Nothing).is_ok(), "a pivot det reads is no error")
+    assert(err(check[f32]("eig", "geev", 1, Means.Unconverged), "geev").cause == NoConvergence(1), "unconverged")
+
+private inplace_strided[T: Scalar](tol: real)
+    // A in a 3-row buffer (ld 3, a sentinel row), B in a 4-row one (ld 4): neither leading dimension
+    // is the other's, nor the order.
+    val store: Mat[T] = zeros(3, 2)
+    val rhs: Mat[T] = zeros(4, 2)
+
+    for j in 0..<2
+        store.set(2, j, T.from_parts(-7.0, 0.0))
+        rhs.set(2, j, T.from_parts(-9.0, 0.0))
+        rhs.set(3, j, T.from_parts(-9.0, 0.0))
+
+    // [[2, 1], [1, 3]] X = [[3, 1], [5, 2]]: X = [[0.8, 0.2], [1.4, 0.6]].
+    store.set(0, 0, T.from_parts(2.0, 0.0))
+    store.set(1, 0, T.from_parts(1.0, 0.0))
+    store.set(0, 1, T.from_parts(1.0, 0.0))
+    store.set(1, 1, T.from_parts(3.0, 0.0))
+    rhs.set(0, 0, T.from_parts(3.0, 0.0))
+    rhs.set(1, 0, T.from_parts(5.0, 0.0))
+    rhs.set(0, 1, T.from_parts(1.0, 0.0))
+    rhs.set(1, 1, T.from_parts(2.0, 0.0))
+
+    var ipiv: []i32 = [0, 0]
+    val b = strided(rhs.data, 2, 2, 4)
+
+    assert_eq(ok(solve_inplace(strided(store.data, 2, 2, 3), ipiv, b), "solve_inplace"), 0)
+    assert_mat(b, from_rows(2, 2, [0.8, 0.2, 1.4, 0.6]), tol, s"${T.prefix()}gesv where it lies")
+    assert_eq(gap(rhs.at(2, 1), T.from_parts(-9.0, 0.0)), 0.0)
+    assert_eq(gap(store.at(2, 1), T.from_parts(-7.0, 0.0)), 0.0)
+
+@test
+solve_inplace_honours_each_leading_dimension_at_every_type() =
+    inplace_strided[f32](1.0e-6)
+    inplace_strided[real](1.0e-15)
+    inplace_strided[Complex[f32]](1.0e-6)
+    inplace_strided[Complex[real]](1.0e-15)
+
+// -- The README's example -------------------------------------------------------------------------
+
+@test
+the_readme_example_answers_what_it_says() =
+    var a = [4.0, 1.0, 1.0, 3.0]
+    val m = mat(a, 2, 2)
+    val x = solve(m, vector([1.0, 2.0])).unwrap().data
+    val root5 = 5.0.sqrt()
+
+    assert_close(x[0], 1.0 / 11.0, 1.0e-16, "x0")
+    assert_close(x[1], 7.0 / 11.0, 1.0e-16, "x1")
+
+    val e = eigh(m).unwrap().values
+
+    assert_close(e[0], (7.0 - root5) / 2.0, 1.0e-15, "λ₁")
+    assert_close(e[1], (7.0 + root5) / 2.0, 1.0e-15, "λ₂")
+
+    val s = svdvals(m).unwrap()
+
+    assert_close(s[0], (7.0 + root5) / 2.0, 1.0e-15, "σ₁")
+    assert_close(s[1], (7.0 - root5) / 2.0, 1.0e-15, "σ₂")
+    assert_eq(s"${x[0]}".starts_with("0.0909"), true)

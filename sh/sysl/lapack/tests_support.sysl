@@ -1,0 +1,102 @@
+module sh.sysl.lapack
+@tests
+
+import sysl.math.complex.Complex
+
+// What the tests are checked with: matrices written row by row as people write them, the product and
+// the adjoint computed here in plain sysl, and the largest elementwise difference. None of it calls
+// LAPACK, so a residual computed with it is an oracle independent of the routine under test.
+
+/** An m × n matrix from `xs`, written row by row. */
+from_rows[T: Scalar](rows: usize, cols: usize, xs: []const real) -> Mat[T]
+    val out: Mat[T] = zeros(rows, cols)
+
+    for i in 0..<rows
+        for j in 0..<cols do out.set(i, j, T.from_parts(xs[i * cols + j], 0.0))
+
+    out
+
+/** An m × n complex matrix from `xs`, row by row, as (re, im) pairs. */
+from_rows_c[T: Scalar](rows: usize, cols: usize, xs: []const real) -> Mat[T]
+    val out: Mat[T] = zeros(rows, cols)
+
+    for i in 0..<rows
+        for j in 0..<cols
+            val k = (i * cols + j) * 2
+
+            out.set(i, j, T.from_parts(xs[k], xs[k + 1]))
+
+    out
+
+/** A B, by the definition. */
+matmul[T: Scalar](a: Mat[T], b: Mat[T]) -> Mat[T]
+    val out: Mat[T] = zeros(a.rows, b.cols)
+
+    for i in 0..<a.rows
+        for j in 0..<b.cols
+            var acc = T.zero()
+
+            for k in 0..<a.cols do acc = acc + a.at(i, k) * b.at(k, j)
+
+            out.set(i, j, acc)
+
+    out
+
+/** Aᴴ: the conjugate transpose. */
+adjoint[T: Scalar](a: Mat[T]) -> Mat[T]
+    val out: Mat[T] = zeros(a.cols, a.rows)
+
+    for i in 0..<a.rows
+        for j in 0..<a.cols do out.set(j, i, T.conjugate(a.at(i, j)))
+
+    out
+
+/** The n × n identity. */
+eye[T: Scalar](n: usize) -> Mat[T]
+    val out: Mat[T] = zeros(n, n)
+
+    for i in 0..<n do out.set(i, i, T.one())
+
+    out
+
+/** |x − y| for two elements, widened to `real`. */
+gap[T: Scalar](x: T, y: T) -> real = T.magnitude(x - y).to_real()
+
+/** The largest |aᵢⱼ − bᵢⱼ|; infinite where the shapes differ. */
+max_diff[T: Scalar](a: Mat[T], b: Mat[T]) -> real
+    if a.rows != b.rows || a.cols != b.cols then return 1.0e300
+
+    var worst = 0.0
+
+    for j in 0..<a.cols
+        for i in 0..<a.rows
+            val d = gap(a.at(i, j), b.at(i, j))
+
+            if d > worst || d != d then worst = d
+
+    worst
+
+/** |x − y| ≤ tol, failing with `what` and both values. */
+assert_close(got: real, want: real, tol: real, what: string)
+    val d = got - want
+
+    assert((if d < 0.0 then -d else d) <= tol, s"$what: got $got, want $want within $tol")
+
+/** Two matrices agree within `tol`. */
+assert_mat[T: Scalar](got: Mat[T], want: Mat[T], tol: real, what: string) =
+    assert(max_diff(got, want) <= tol, s"$what: differs by ${max_diff(got, want)}, more than $tol")
+
+/** A complex value and an expected (re, im). */
+assert_complex[F: Width](got: Complex[F], re: real, im: real, tol: real, what: string)
+    assert_close(got.re.to_real(), re, tol, s"$what (re)")
+    assert_close(got.im.to_real(), im, tol, s"$what (im)")
+
+/** The value of a `Result` that must be `Ok`, failing the test with the error otherwise. */
+ok[V](r: Result[V, Error], what: string) -> V = r match
+    Ok(v) -> v
+    Err(e) -> panic(s"$what: unexpected error: $e")
+
+/** The error of a `Result` that must be `Err`. */
+err[V](r: Result[V, Error], what: string) -> Error = r match
+    Ok(_) -> panic(s"$what: succeeded where it must fail")
+    Err(e) -> e

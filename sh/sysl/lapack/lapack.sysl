@@ -1,0 +1,552 @@
+module sh.sysl.lapack
+
+import sysl.math.{Float, max, min}
+import sysl.math.complex.Complex
+import sysl.slices.as_mut_ptr
+
+// The dense linear-algebra functions, each one LAPACK routine (or two) for all four element types.
+//
+// **Each is the call nex's compiler emits for the same name** (`nex/compiler/emit_lapack.sysl`): the
+// same routine, the same arguments, the workspace sized by the same query (`lwork = -1`) or the same
+// formula, the input copied into the same dense column-major layout (`ld == max(rows, 1)`). That is
+// what lets the nex interpreter, which calls these, answer bit for bit what compiled nex answers on
+// the same LAPACK.
+//
+// **The value forms copy their inputs** and answer fresh storage; **the `_inplace` forms** work in
+// the caller's storage and answer LAPACK's `info` (at least 0) rather than an error for what the
+// factorization reports. A positive `info` from a value form is an `Error` naming the routine and the
+// cause; a negative one names the argument LAPACK refused, which no call here should make.
+
+/** Room for `n` elements, all zero. */
+private fresh[T: Zero](n: usize) -> []T = [T.zero(); n]
+
+/** `x` as a Fortran `integer`. Every extent is checked by `fits` before it gets here. */
+private int(x: usize) -> i32 = i32(x)
+
+/** The real and imaginary parts of `x` as a `Complex` of its width. */
+private complex_of[T: Scalar](x: T) -> Complex[T::Real] = Complex(T.real_part(x), T.imag_part(x))
+
+// -- Solving --------------------------------------------------------------------------------------
+
+/** `X` with `A X = B`, A square (`?gesv`). A vector right-hand side is `vector(b)`. */
+solve[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
+    square("solve", a)?
+    fits("solve", b)?
+
+    if b.rows != a.rows then return shape("solve", s"the right-hand side has ${b.rows} rows; the matrix has ${a.rows}")
+
+    val f = dense(a)
+    val x = dense(b)
+    var ipiv: []i32 = fresh(a.rows)
+    var info: i32 = 0
+
+    T.gesv(&int(a.rows), &int(x.cols), f.ptr(), &int(f.ld), as_mut_ptr(ipiv), x.ptr(), &int(x.ld), &info)
+    check[T]("solve", "gesv", info, Means.Singular)?
+    Ok(x)
+
+/** The minimum-norm least-squares `X` minimizing ‖A X − B‖, A any shape and any rank (`?gelsd`,
+ * singular values below machine precision taken as zero: `rcond = -1`).
+ */
+lstsq[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
+    fits("lstsq", a)?
+    fits("lstsq", b)?
+
+    if b.rows != a.rows then return shape("lstsq", s"the right-hand side has ${b.rows} rows; the matrix has ${a.rows}")
+
+    val m = a.rows
+    val n = a.cols
+    val nrhs = b.cols
+    val f = dense(a)
+    val mx = max(max(m, n), 1)
+    val x: Mat[T] = zeros(mx, nrhs)
+
+    for j in 0..<nrhs
+        for i in 0..<m do x.set(i, j, b.at(i, j))
+
+    val mn = min(m, n)
+    var sv: []T::Real = [0.0; max(mn, 1)]
+    var rcond: T::Real = -1.0
+    var rank: i32 = 0
+    val nlvl = 64 - u64(mn).leading_zeros()
+    var iwork: []i32 = fresh(max(mn * nlvl * 3 + mn * 11, 1))
+    var rwork: []T::Real = [0.0; 1]
+
+    if T.is_complex()
+        val small = 25
+        val lr = mn * 10 + mn * small * 2 + mn * nlvl * 8 + small * nrhs * 3 + max(26 * 26, n * (nrhs + 1) + nrhs * 2)
+
+        rwork = [0.0; lr]
+
+    var query = T.zero()
+    var info: i32 = 0
+
+    T.gelsd(&int(m), &int(n), &int(nrhs), f.ptr(), &int(f.ld), x.ptr(), &int(mx), as_mut_ptr(sv), &rcond, &rank, &query, &-1, as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+
+    T.gelsd(&int(m), &int(n), &int(nrhs), f.ptr(), &int(f.ld), x.ptr(), &int(mx), as_mut_ptr(sv), &rcond, &rank, as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
+    check[T]("lstsq", "gelsd", info, Means.Unconverged)?
+    Ok(strided(x.data, n, nrhs, mx))
+
+/** `X` with `A X = B` for a triangular A, the lower triangle or the `upper` one read (`?trtrs`). */
+solve_triangular[T: Scalar](a: Mat[T], b: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
+    square("solve_triangular", a)?
+    fits("solve_triangular", b)?
+
+    if b.rows != a.rows then return shape("solve_triangular", s"the right-hand side has ${b.rows} rows; the matrix has ${a.rows}")
+
+    val x = dense(b)
+    var info: i32 = 0
+
+    T.trtrs(&u8(if upper then 'U' else 'L'), &u8('N'), &u8('N'), &int(a.rows), &int(x.cols), a.ptr(), &int(a.ld), x.ptr(), &int(x.ld), &info)
+    check[T]("solve_triangular", "trtrs", info, Means.Singular)?
+    Ok(x)
+
+// -- Inverse, determinant, condition --------------------------------------------------------------
+
+/** The inverse of a square A (`?getrf`, then `?getri`). */
+inv[T: Scalar](a: Mat[T]) -> Result[Mat[T], Error]
+    square("inv", a)?
+
+    val f = dense(a)
+    var n = int(a.rows)
+    var ipiv: []i32 = fresh(a.rows)
+    var info: i32 = 0
+
+    T.getrf(&n, &n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &info)
+    check[T]("inv", "getrf", info, Means.Singular)?
+
+    var query = T.zero()
+
+    T.getri(&n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &query, &-1, &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+
+    T.getri(&n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), as_mut_ptr(work), &int(work.len), &info)
+    check[T]("inv", "getri", info, Means.Singular)?
+    Ok(f)
+
+/** The determinant of a square A: the product of `?getrf`'s U diagonal, its sign flipped once per
+ * row interchange, and exactly zero where a pivot is.
+ */
+det[T: Scalar](a: Mat[T]) -> Result[T, Error]
+    square("det", a)?
+
+    val f = dense(a)
+    var n = int(a.rows)
+    var ipiv: []i32 = fresh(a.rows)
+    var info: i32 = 0
+
+    T.getrf(&n, &n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &info)
+    check[T]("det", "getrf", info, Means.Nothing)?
+
+    if info > 0 then return Ok(T.zero())
+
+    var acc = T.one()
+
+    for i in 0..<a.rows
+        val d = f.at(i, i)
+
+        acc = acc * (if ipiv[i] != int(i + 1) then -d else d)
+
+    Ok(acc)
+
+/** The reciprocal of A's condition number in the 1-norm, estimated (`?getrf`, then `?gecon`): near
+ * 1 for a well-conditioned matrix, near machine precision for a nearly singular one, and an
+ * `Error` for an exactly singular one.
+ */
+rcond[T: Scalar](a: Mat[T]) -> Result[T::Real, Error]
+    square("rcond", a)?
+
+    var anorm: T::Real = 0.0
+
+    for j in 0..<a.cols
+        var sum: T::Real = 0.0
+
+        for i in 0..<a.rows do sum = sum + T.magnitude(a.at(i, j))
+
+        if sum > anorm then anorm = sum
+
+    val f = dense(a)
+    var n = int(a.rows)
+    var ipiv: []i32 = fresh(a.rows)
+    var info: i32 = 0
+
+    T.getrf(&n, &n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &info)
+    check[T]("rcond", "getrf", info, Means.Singular)?
+
+    var rc: T::Real = 0.0
+    var work: []T = fresh(max(a.rows * 4, 1))
+    var rwork: []T::Real = [0.0; max(a.rows * 2, 1)]
+    var iwork: []i32 = fresh(max(a.rows, 1))
+
+    T.gecon(&u8('1'), &n, f.ptr(), &int(f.ld), &anorm, &rc, as_mut_ptr(work), as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
+    check[T]("rcond", "gecon", info, Means.Nothing)?
+    Ok(rc)
+
+// -- Factorizations -------------------------------------------------------------------------------
+
+/** `?getrf`'s answer, unpacked: `p[i]` is the row of A that row i of `l @ u` is — A[p[i], :] ==
+ * (L U)[i, :] — with `l` m × k unit lower triangular and `u` k × n upper, k = min(m, n). `factors`
+ * and `ipiv` are LAPACK's own, which `lu_solve` reads.
+ */
+struct Lu[T]
+    l: Mat[T]
+    u: Mat[T]
+    perm: []usize
+    factors: Mat[T]
+    ipiv: []i32
+
+/** The LU factorization with partial pivoting of any A (`?getrf`). A singular A factors: its U has
+ * a zero on the diagonal, and solving with it is what fails.
+ */
+lu[T: Scalar](a: Mat[T]) -> Result[Lu[T], Error]
+    fits("lu", a)?
+
+    val m = a.rows
+    val n = a.cols
+    val k = min(m, n)
+    val f = dense(a)
+    var ipiv: []i32 = fresh(k)
+    var info: i32 = 0
+
+    T.getrf(&int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &info)
+    check[T]("lu", "getrf", info, Means.Nothing)?
+
+    val l: Mat[T] = zeros(m, k)
+    val u: Mat[T] = zeros(k, n)
+
+    for j in 0..<k
+        for i in 0..<m do l.set(i, j, if i > j then f.at(i, j) elif i == j then T.one() else T.zero())
+
+    for j in 0..<n
+        for i in 0..<k do u.set(i, j, if i <= j then f.at(i, j) else T.zero())
+
+    var perm: []usize = fresh(m)
+
+    for i in 0..<m do perm[i] = i
+
+    for step in 0..<k
+        val other = usize(ipiv[step] - 1)
+        val here = perm[step]
+
+        perm[step] = perm[other]
+        perm[other] = here
+
+    Ok(Lu(l, u, perm, f, ipiv))
+
+/** `X` with `A X = B` from `lu(A)` of a square A (`?getrs`). */
+lu_solve[T: Scalar](f: Lu[T], b: Mat[T]) -> Result[Mat[T], Error]
+    square("lu_solve", f.factors)?
+    fits("lu_solve", b)?
+
+    if b.rows != f.factors.rows then return shape("lu_solve", s"the right-hand side has ${b.rows} rows; the matrix has ${f.factors.rows}")
+
+    for i in 0..<f.factors.rows
+        if f.factors.at(i, i) == T.zero() then return Err(Error("lu_solve", T.prefix() + "getrf", Singular(i + 1)))
+
+    val x = dense(b)
+    var info: i32 = 0
+
+    T.getrs(&u8('N'), &int(f.factors.rows), &int(x.cols), f.factors.ptr(), &int(f.factors.ld), as_mut_ptr(f.ipiv), x.ptr(), &int(x.ld), &info)
+    check[T]("lu_solve", "getrs", info, Means.Singular)?
+    Ok(x)
+
+/** The Cholesky factor of a symmetric / Hermitian positive-definite A (`?potrf`): lower L with
+ * A = L Lᴴ, or with `upper`, U with A = Uᴴ U. Only that triangle of A is read and the other triangle
+ * of the answer is zero.
+ */
+chol[T: Scalar](a: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
+    square("chol", a)?
+
+    val f = dense(a)
+    var info: i32 = 0
+
+    T.potrf(&u8(if upper then 'U' else 'L'), &int(a.rows), f.ptr(), &int(f.ld), &info)
+    check[T]("chol", "potrf", info, Means.Indefinite)?
+
+    for j in 0..<f.cols
+        for i in 0..<f.rows
+            val keep = if upper then i <= j else i >= j
+
+            if !keep then f.set(i, j, T.zero())
+
+    Ok(f)
+
+/** `X` with `A X = B` from `chol(A, upper)` (`?potrs`). */
+chol_solve[T: Scalar](factor: Mat[T], b: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
+    square("chol_solve", factor)?
+    fits("chol_solve", b)?
+
+    if b.rows != factor.rows then return shape("chol_solve", s"the right-hand side has ${b.rows} rows; the matrix has ${factor.rows}")
+
+    val x = dense(b)
+    var info: i32 = 0
+
+    T.potrs(&u8(if upper then 'U' else 'L'), &int(factor.rows), &int(x.cols), factor.ptr(), &int(factor.ld), x.ptr(), &int(x.ld), &info)
+    check[T]("chol_solve", "potrs", info, Means.Nothing)?
+    Ok(x)
+
+/** The thin QR factorization A = Q R: Q m × k with orthonormal columns, R k × n upper triangular,
+ * k = min(m, n).
+ */
+struct Qr[T]
+    q: Mat[T]
+    r: Mat[T]
+
+/** The thin QR factorization of any A (`?geqrf`, then `?orgqr` / `?ungqr`). */
+qr[T: Scalar](a: Mat[T]) -> Result[Qr[T], Error]
+    fits("qr", a)?
+
+    val m = a.rows
+    val n = a.cols
+    val k = min(m, n)
+    val f = dense(a)
+    var tau: []T = fresh(max(k, 1))
+    var query = T.zero()
+    var info: i32 = 0
+
+    T.geqrf(&int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(tau), &query, &-1, &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+
+    T.geqrf(&int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(tau), as_mut_ptr(work), &int(work.len), &info)
+    check[T]("qr", "geqrf", info, Means.Nothing)?
+
+    val r: Mat[T] = zeros(k, n)
+
+    for j in 0..<n
+        for i in 0..<k do r.set(i, j, if i <= j then f.at(i, j) else T.zero())
+
+    query = T.zero()
+    T.ungqr(&int(m), &int(k), &int(k), f.ptr(), &int(f.ld), as_mut_ptr(tau), &query, &-1, &info)
+
+    var gen: []T = fresh(T.real_part(query).to_count())
+
+    T.ungqr(&int(m), &int(k), &int(k), f.ptr(), &int(f.ld), as_mut_ptr(tau), as_mut_ptr(gen), &int(gen.len), &info)
+    check[T]("qr", if T.is_complex() then "ungqr" else "orgqr", info, Means.Nothing)?
+    Ok(Qr(strided(f.data, m, k, f.ld), r))
+
+// -- Eigenvalues ----------------------------------------------------------------------------------
+
+/** The eigenvalues of a general square A, always complex (`?geev`), in LAPACK's order: unsorted, a
+ * conjugate pair adjacent with its positive imaginary part first.
+ */
+eigvals[T: Scalar](a: Mat[T]) -> Result[[]Complex[T::Real], Error]
+    val (values, _) = general_eigen(a, "eigvals", false)?
+
+    Ok(values)
+
+/** An eigendecomposition of a general square A. */
+struct Eig[F: Float]
+    values: []Complex[F]
+    /** The eigenvectors as columns, each of unit 2-norm with its largest component real. */
+    vectors: Mat[Complex[F]]
+
+/** The eigenvalues and right eigenvectors of a general square A, always complex (`?geev`). */
+eig[T: Scalar](a: Mat[T]) -> Result[Eig[T::Real], Error]
+    val (values, vectors) = general_eigen(a, "eig", true)?
+
+    Ok(Eig(values, vectors))
+
+private general_eigen[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[([]Complex[T::Real], Mat[Complex[T::Real]]), Error]
+    square(name, a)?
+
+    val n = a.rows
+    val f = dense(a)
+    val vr: Mat[T] = if vectors then zeros(n, n) else zeros(1, 1)
+    var vl: []T = fresh(1)
+    var w: []T = fresh(if T.is_complex() then n else 1)
+    var wr: []T::Real = [0.0; max(n, 1)]
+    var wi: []T::Real = [0.0; max(n, 1)]
+    var rwork: []T::Real = [0.0; if T.is_complex() then max(n * 2, 1) else 1]
+    var jobvr = u8(if vectors then 'V' else 'N')
+    var query = T.zero()
+    var info: i32 = 0
+
+    T.geev(&u8('N'), &jobvr, &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), as_mut_ptr(wr), as_mut_ptr(wi), as_mut_ptr(vl), &1, vr.ptr(), &int(vr.ld), &query, &-1, as_mut_ptr(rwork), &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+
+    T.geev(&u8('N'), &jobvr, &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), as_mut_ptr(wr), as_mut_ptr(wi), as_mut_ptr(vl), &1, vr.ptr(), &int(vr.ld), as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), &info)
+    check[T](name, "geev", info, Means.Unconverged)?
+
+    var values: []Complex[T::Real] = [Complex(0.0, 0.0); n]
+
+    for i in 0..<n do values[i] = if T.is_complex() then complex_of(w[i]) else Complex(wr[i], wi[i])
+
+    val vecs: Mat[Complex[T::Real]] = zeros(if vectors then n else 0, if vectors then n else 0)
+
+    if vectors
+        for j in 0..<n
+            for i in 0..<n
+                if T.is_complex()
+                    vecs.set(i, j, complex_of(vr.at(i, j)))
+                elif wi[j] > 0.0
+                    vecs.set(i, j, Complex(T.real_part(vr.at(i, j)), T.real_part(vr.at(i, j + 1))))
+                elif wi[j] < 0.0
+                    vecs.set(i, j, Complex(T.real_part(vr.at(i, j - 1)), -T.real_part(vr.at(i, j))))
+                else
+                    vecs.set(i, j, Complex(T.real_part(vr.at(i, j)), 0.0))
+
+    Ok((values, vecs))
+
+/** The eigendecomposition of a symmetric / Hermitian matrix. */
+struct Eigh[T, F: Float]
+    /** The eigenvalues, real and ascending. */
+    values: []F
+    /** The orthonormal eigenvectors as columns, in the values' order. */
+    vectors: Mat[T]
+
+/** The eigenvalues and eigenvectors of a symmetric / Hermitian A, its lower triangle read
+ * (`?syevd` / `?heevd`).
+ */
+eigh[T: Scalar](a: Mat[T]) -> Result[Eigh[T, T::Real], Error]
+    square("eigh", a)?
+
+    val n = a.rows
+    val f = dense(a)
+    var w: []T::Real = [0.0; n]
+    var query = T.zero()
+    var rquery: T::Real = 0.0
+    var iquery: i32 = 0
+    var info: i32 = 0
+
+    T.heevd(&u8('V'), &u8('L'), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), &query, &-1, &rquery, &-1, &iquery, &-1, &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+    var rwork: []T::Real = [0.0; if T.is_complex() then rquery.to_count() else 1]
+    var iwork: []i32 = fresh(usize(max(iquery, 1)))
+
+    T.heevd(&u8('V'), &u8('L'), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), &int(rwork.len), as_mut_ptr(iwork), &int(iwork.len), &info)
+    check[T]("eigh", if T.is_complex() then "heevd" else "syevd", info, Means.Unconverged)?
+    Ok(Eigh(w, f))
+
+// -- The singular value decomposition -------------------------------------------------------------
+
+/** The thin SVD A = U diag(s) Vᴴ: U m × k, `s` the k singular values descending, V n × k. */
+struct Svd[T, F: Float]
+    u: Mat[T]
+    s: []F
+    v: Mat[T]
+
+/** The thin SVD of any A (`?gesdd`, `jobz = 'S'`). */
+svd[T: Scalar](a: Mat[T]) -> Result[Svd[T, T::Real], Error]
+    val (u, s, vh) = singular(a, "svd", true)?
+    val k = s.len
+    val v: Mat[T] = zeros(a.cols, k)
+
+    for j in 0..<k
+        for i in 0..<a.cols do v.set(i, j, T.conjugate(vh.at(j, i)))
+
+    Ok(Svd(u, s, v))
+
+/** The singular values of any A, descending (`?gesdd`, `jobz = 'N'`). */
+svdvals[T: Scalar](a: Mat[T]) -> Result[[]T::Real, Error]
+    val (_, s, _) = singular(a, "svdvals", false)?
+
+    Ok(s)
+
+private singular[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[(Mat[T], []T::Real, Mat[T]), Error]
+    fits(name, a)?
+
+    val m = a.rows
+    val n = a.cols
+    val k = min(m, n)
+    val f = dense(a)
+    var s: []T::Real = [0.0; k]
+    val u: Mat[T] = if vectors then zeros(m, k) else zeros(1, 1)
+    val vh: Mat[T] = if vectors then zeros(k, n) else zeros(1, 1)
+    var iwork: []i32 = fresh(max(k * 8, 1))
+    var rwork: []T::Real = [0.0; 1]
+
+    if T.is_complex()
+        val wide = (max(m, n) + k) * 2 + 1
+        val tall = k * 5 + 7
+
+        rwork = [0.0; max(k * max(tall, wide), 1)]
+
+    var jobz = u8(if vectors then 'S' else 'N')
+    var query = T.zero()
+    var info: i32 = 0
+
+    T.gesdd(&jobz, &int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(s), u.ptr(), &int(u.ld), vh.ptr(), &int(vh.ld), &query, &-1, as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+
+    T.gesdd(&jobz, &int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(s), u.ptr(), &int(u.ld), vh.ptr(), &int(vh.ld), as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
+    check[T](name, "gesdd", info, Means.Unconverged)?
+    Ok((u, s, vh))
+
+// -- In place -------------------------------------------------------------------------------------
+
+/** `?gesv` where A and B lie: A overwritten with its LU factors, `ipiv` with the pivots, B with the
+ * solution. Answers LAPACK's `info` — above zero, U(info, info) is exactly zero and B is not a
+ * solution — and an `Error` only for shapes that do not fit.
+ */
+solve_inplace[T: Scalar](a: Mat[T], ipiv: []i32, b: Mat[T]) -> Result[i32, Error]
+    square("solve_inplace", a)?
+    fits("solve_inplace", b)?
+
+    if ipiv.len < a.rows then return shape("solve_inplace", s"ipiv holds ${ipiv.len} pivots; the matrix has ${a.rows} rows")
+    if b.rows != a.rows then return shape("solve_inplace", s"the right-hand side has ${b.rows} rows; the matrix has ${a.rows}")
+
+    var info: i32 = 0
+
+    T.gesv(&int(a.rows), &int(b.cols), a.ptr(), &int(a.ld), as_mut_ptr(ipiv), b.ptr(), &int(b.ld), &info)
+    check[T]("solve_inplace", "gesv", info, Means.Nothing)?
+    Ok(info)
+
+/** `?getrf` where A lies: L below the diagonal, U on and above it, the pivots in `ipiv`. Answers
+ * LAPACK's `info`: above zero, U(info, info) is exactly zero.
+ */
+lu_inplace[T: Scalar](a: Mat[T], ipiv: []i32) -> Result[i32, Error]
+    fits("lu_inplace", a)?
+
+    if ipiv.len < min(a.rows, a.cols) then return shape("lu_inplace", s"ipiv holds ${ipiv.len} pivots; min(m, n) is ${min(a.rows, a.cols)}")
+
+    var info: i32 = 0
+
+    T.getrf(&int(a.rows), &int(a.cols), a.ptr(), &int(a.ld), as_mut_ptr(ipiv), &info)
+    check[T]("lu_inplace", "getrf", info, Means.Nothing)?
+    Ok(info)
+
+/** `?potrf` where A lies: the triangle it reads overwritten with the factor, the other untouched.
+ * Answers LAPACK's `info`: above zero, the leading minor of that order is not positive definite.
+ */
+chol_inplace[T: Scalar](a: Mat[T], upper: bool = false) -> Result[i32, Error]
+    square("chol_inplace", a)?
+
+    var info: i32 = 0
+
+    T.potrf(&u8(if upper then 'U' else 'L'), &int(a.rows), a.ptr(), &int(a.ld), &info)
+    check[T]("chol_inplace", "potrf", info, Means.Nothing)?
+    Ok(info)
+
+/** `?geqrf` where A lies: R on and above the diagonal, the Householder reflectors below it, their
+ * scales in `tau`. Answers LAPACK's `info`, which is 0.
+ */
+qr_inplace[T: Scalar](a: Mat[T], tau: []T) -> Result[i32, Error]
+    fits("qr_inplace", a)?
+
+    if tau.len < min(a.rows, a.cols) then return shape("qr_inplace", s"tau holds ${tau.len} elements; min(m, n) is ${min(a.rows, a.cols)}")
+
+    var query = T.zero()
+    var info: i32 = 0
+
+    T.geqrf(&int(a.rows), &int(a.cols), a.ptr(), &int(a.ld), as_mut_ptr(tau), &query, &-1, &info)
+
+    var work: []T = fresh(T.real_part(query).to_count())
+
+    T.geqrf(&int(a.rows), &int(a.cols), a.ptr(), &int(a.ld), as_mut_ptr(tau), as_mut_ptr(work), &int(work.len), &info)
+    check[T]("qr_inplace", "geqrf", info, Means.Nothing)?
+    Ok(info)
+
+// -- Machine parameters ---------------------------------------------------------------------------
+
+/** LAPACK's machine parameter `cmach` at the width `F` (`?lamch`): `'E'` the relative machine
+ * precision, `'S'` the safe minimum, `'B'` the base, `'P'` eps × base, `'N'` the mantissa digits,
+ * `'R'` 1 where rounding occurs, `'M'` the minimum exponent, `'U'` the underflow threshold, `'L'` the
+ * maximum exponent, `'O'` the overflow threshold. Any other letter answers 0.
+ */
+lamch[F: Width](cmach: u8) -> F = F.machine(cmach)
