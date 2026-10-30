@@ -1,6 +1,7 @@
 module sh.sysl.lapack
 @tests
 
+import sh.sysl.blas.MatrixView
 import sysl.math.complex.Complex
 
 // Solving, inverting, the determinant and the condition number. Every oracle is a closed form: a
@@ -11,8 +12,8 @@ import sysl.math.complex.Complex
 
 // A = [[2,1,1],[1,3,2],[1,0,0]] and x = (1, 2, 3), so b = A x = (7, 13, 1).
 private hand_system[T: Scalar](tol: real)
-    val a: Mat[T] = from_rows(3, 3, [2.0, 1.0, 1.0, 1.0, 3.0, 2.0, 1.0, 0.0, 0.0])
-    val b: Mat[T] = from_rows(3, 1, [7.0, 13.0, 1.0])
+    val a: MatrixView[T] = from_rows(3, 3, [2.0, 1.0, 1.0, 1.0, 3.0, 2.0, 1.0, 0.0, 0.0])
+    val b: MatrixView[T] = from_rows(3, 1, [7.0, 13.0, 1.0])
     val x = ok(solve(a, b), "solve")
 
     assert_mat(x, from_rows(3, 1, [1.0, 2.0, 3.0]), tol, s"${T.prefix()}gesv x")
@@ -28,8 +29,8 @@ solve_answers_a_hand_checked_system_at_every_type() =
 
 // A = [[1+i, 2],[3, 4−i]] and x = (1, i): b = (1+3i, 4+4i).
 private complex_system[T: Scalar](tol: real)
-    val a: Mat[T] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 3.0, 0.0, 4.0, -1.0])
-    val b: Mat[T] = from_rows_c(2, 1, [1.0, 3.0, 4.0, 4.0])
+    val a: MatrixView[T] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 3.0, 0.0, 4.0, -1.0])
+    val b: MatrixView[T] = from_rows_c(2, 1, [1.0, 3.0, 4.0, 4.0])
 
     assert_mat(ok(solve(a, b), "solve"), from_rows_c(2, 1, [1.0, 0.0, 0.0, 1.0]), tol, s"${T.prefix()}gesv complex x")
 
@@ -40,8 +41,8 @@ solve_answers_a_genuinely_complex_system() =
 
 @test
 solve_takes_several_right_hand_sides_and_the_residual_is_small() =
-    val a: Mat[real] = from_rows(4, 4, [4.0, -2.0, 1.0, 3.0, 3.0, 6.0, -4.0, 2.0, 2.0, 1.0, 8.0, -5.0, 1.0, 3.0, 2.0, 9.0])
-    val b: Mat[real] = from_rows(4, 3, [1.0, 0.0, 2.0, 0.0, 1.0, -1.0, 3.0, 2.0, 0.5, -1.0, 4.0, 7.0])
+    val a: MatrixView[real] = from_rows(4, 4, [4.0, -2.0, 1.0, 3.0, 3.0, 6.0, -4.0, 2.0, 2.0, 1.0, 8.0, -5.0, 1.0, 3.0, 2.0, 9.0])
+    val b: MatrixView[real] = from_rows(4, 3, [1.0, 0.0, 2.0, 0.0, 1.0, -1.0, 3.0, 2.0, 0.5, -1.0, 4.0, 7.0])
     val x = ok(solve(a, b), "solve")
 
     assert_mat(matmul(a, x), b, 1.0e-13, "‖A X − B‖")
@@ -94,8 +95,8 @@ solve_of_an_empty_system_is_empty() =
 
 // -- inv ------------------------------------------------------------------------------------------
 
-private hilbert[T: Scalar](n: usize) -> Mat[T]
-    val h: Mat[T] = zeros(n, n)
+private hilbert[T: Scalar](n: usize) -> MatrixView[T]
+    val h: MatrixView[T] = zeros(n, n)
 
     for i in 0..<n
         for j in 0..<n do h.set(i, j, T.from_parts(1.0 / real(i + j + 1), 0.0))
@@ -114,7 +115,7 @@ inv_of_the_hilbert_matrix_is_its_integer_inverse() =
 
 @test
 inv_times_the_matrix_is_the_identity() =
-    val a: Mat[Complex[real]] = from_rows_c(3, 3, [2.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, -1.0, 4.0, 1.0])
+    val a: MatrixView[Complex[real]] = from_rows_c(3, 3, [2.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, -1.0, 4.0, 1.0])
 
     assert_mat(matmul(a, ok(inv(a), "zinv")), eye(3), 1.0e-14, "A A⁻¹")
 
@@ -140,7 +141,7 @@ det_of_the_hilbert_matrix_is_one_over_6048000() =
 det_of_a_vandermonde_matrix_is_the_product_of_the_differences() =
     // V[i][j] = xᵢʲ for x = (1, 2, 3, 4): ∏_{i<j} (xⱼ − xᵢ) = 1·2·3·1·2·1 = 12.
     val xs = [1.0, 2.0, 3.0, 4.0]
-    val v: Mat[real] = zeros(4, 4)
+    val v: MatrixView[real] = zeros(4, 4)
 
     for i in 0..<4
         var p = 1.0
@@ -184,12 +185,12 @@ rcond_is_one_for_the_identity_and_small_for_hilbert() =
 @test
 solve_triangular_reads_only_its_triangle() =
     // The upper triangle holds 99s that must be ignored: L = [[2,0,0],[1,1,0],[3,−1,4]], x = (1, 2, 3).
-    val l: Mat[real] = from_rows(3, 3, [2.0, 99.0, 99.0, 1.0, 1.0, 99.0, 3.0, -1.0, 4.0])
+    val l: MatrixView[real] = from_rows(3, 3, [2.0, 99.0, 99.0, 1.0, 1.0, 99.0, 3.0, -1.0, 4.0])
     val x = ok(solve_triangular(l, from_rows(3, 1, [2.0, 3.0, 13.0])), "trtrs lower")
 
     assert_mat(x, from_rows(3, 1, [1.0, 2.0, 3.0]), 1.0e-15, "lower x")
 
-    val u: Mat[real] = from_rows(3, 3, [1.0, 2.0, 3.0, 99.0, 4.0, 5.0, 99.0, 99.0, 6.0])
+    val u: MatrixView[real] = from_rows(3, 3, [1.0, 2.0, 3.0, 99.0, 4.0, 5.0, 99.0, 99.0, 6.0])
     val y = ok(solve_triangular(u, from_rows(3, 1, [14.0, 23.0, 18.0]), upper = true), "trtrs upper")
 
     assert_mat(y, from_rows(3, 1, [1.0, 2.0, 3.0]), 1.0e-15, "upper x")
@@ -201,7 +202,7 @@ solve_triangular_reads_only_its_triangle() =
 
 @test
 lu_solve_reuses_the_factorization() =
-    val a: Mat[Complex[real]] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 3.0, 0.0, 4.0, -1.0])
+    val a: MatrixView[Complex[real]] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 3.0, 0.0, 4.0, -1.0])
     val f = ok(lu(a), "lu")
     val x = ok(lu_solve(f, from_rows_c(2, 1, [1.0, 3.0, 4.0, 4.0])), "getrs")
 

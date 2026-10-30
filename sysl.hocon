@@ -19,12 +19,40 @@ package {
 
 // **`heap`**: every answer is fresh storage, and every workspace LAPACK asks for is allocated.
 // **`posix`**: LAPACK is a hosted library — Accelerate or OpenBLAS, each with threads under it.
-//
-// **No `pkg_config`.** The library is named by `@link("lapack")` in `c/c.sysl` and found by the
-// linker: Accelerate's `liblapack.tbd` in the macOS SDK, or the directory `--link-path` names
-// (`/opt/homebrew/opt/openblas/lib` for Homebrew's OpenBLAS), or the distribution's `liblapack` on
-// Linux. Accelerate ships no `.pc` at all, so a probe would refuse the one library every Mac has.
 requires {
   heap  = true
   posix = true
+}
+
+// **`blas` supplies the matrix view and the element types**: `MatrixView[T]` is the one column-major
+// view both packages read, and `Element` is the trait `Scalar` extends.
+dependencies {
+  blas { path = "../blas" }
+}
+
+// **Which LAPACK answers is chosen as `blas` chooses its BLAS, by the same two features, and each
+// passes itself on to `blas`** — so one build never pairs Accelerate's LAPACK with OpenBLAS's BLAS.
+// `platform` is Accelerate's LAPACK on macOS (`-llapack`, the SDK's `liblapack.tbd`) and OpenBLAS
+// elsewhere; `openblas` is OpenBLAS everywhere, found through `blas`'s `openblas.pc` requirement
+// (`PKG_CONFIG_PATH=/opt/homebrew/opt/openblas/lib/pkgconfig` on macOS, where it is keg-only).
+features {
+  platform {
+    doc     = "the platform's LAPACK: Accelerate on macOS, OpenBLAS (-lopenblas) elsewhere"
+    enables = ["blas/platform"]
+  }
+
+  openblas {
+    doc     = "OpenBLAS's LAPACK — on macOS in place of Accelerate"
+    enables = ["blas/openblas"]
+  }
+}
+
+choices {
+  library { doc = "which LAPACK answers the calls", of = [platform, openblas], default = platform }
+}
+
+// `sysl test .` checks the default library — Accelerate on macOS. `sysl test . --features openblas`
+// runs the same suite against OpenBLAS.
+test {
+  features = [platform]
 }

@@ -46,7 +46,7 @@ taken by grep over each) and all six `?lamch` / `?lange`.
 | `COMPLEX` / `COMPLEX*16` array | `*Complex[f32]` / `*Complex[real]` — `sysl.math.complex.Complex` is two fields of its width, Fortran's layout |
 | `INTEGER` array (ipiv, iwork) | `*i32` |
 | `DOUBLE PRECISION FUNCTION` (`dlamch`, `dlange`, `zlange`) | `-> real`: a `double` in both gfortran's and f2c's convention |
-| workspace query (`lwork = -1`) | the routine called twice; the size read from `work(1)` (`Width.to_count`) |
+| workspace query (`lwork = -1`) | the routine called twice; the size read from `work(1)` (`count`) |
 
 ## What is not declared, and why
 

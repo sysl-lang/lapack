@@ -19,11 +19,11 @@
 // **`integer` is 32 bits**: the LP64 interface, which is Accelerate's classic one and the one
 // Homebrew's and the distributions' OpenBLAS are built with.
 //
-// **Which library answers is decided at the link.** `@link("lapack")` becomes `-llapack`. On macOS
-// the SDK's `liblapack.tbd` is Accelerate's `libLAPACK.dylib` — the library nex links through
-// `-framework Accelerate`. With `--link-path /opt/homebrew/opt/openblas/lib` the same name finds
-// Homebrew's OpenBLAS (`liblapack.dylib` is a link to `libopenblas.dylib` there), and on Linux it is
-// the distribution's LAPACK, OpenBLAS where that is the alternative chosen.
+// **Which library answers is decided by the package's feature, as in `blas`.** With `platform` on
+// macOS, `@link("lapack")` becomes `-llapack`: the SDK's `liblapack.tbd`, Accelerate's
+// `libLAPACK.dylib` — the library nex links through `-framework Accelerate`. With `openblas`, or off
+// macOS, it is `-lopenblas`, which carries LAPACK beside the BLAS, found where `blas`'s `openblas.pc`
+// says.
 //
 // **A `REAL` function is not declared.** gfortran returns a `REAL` function's value as a `float`;
 // f2c — so Accelerate's classic interface — returns it as a `double`. One declaration cannot be right
@@ -32,7 +32,11 @@
 // are not; `sh.sysl.lapack.lamch` answers `slamch`'s values from `f32`'s own constants.
 module sh.sysl.lapack.c
 
+#if macos && !feature_openblas
 @link("lapack")
+#else
+@link("openblas")
+#endif
 
 import sysl.math.complex.Complex
 

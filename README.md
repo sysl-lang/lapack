@@ -9,12 +9,13 @@ through its Fortran interface, for all four of its element types.
 Denver and NAG), Netlib, Apple (Accelerate) or the OpenBLAS project.*
 
 ```sysl
-import sh.sysl.lapack.{eigh, mat, solve, svdvals, vector}
+import sh.sysl.blas.MatrixView
+import sh.sysl.lapack.{eigh, solve, svdvals}
 
 var a = [4.0, 1.0, 1.0, 3.0]                  // column-major: [[4, 1], [1, 3]]
-val m = mat(a, 2, 2)
+val m = MatrixView.of(a, 2, 2).unwrap()
 
-print(solve(m, vector([1.0, 2.0])).unwrap().data)   // [0.0909…, 0.6363…]
+print(solve(m, MatrixView.of([1.0, 2.0], 2, 1).unwrap()).unwrap().data)   // [0.0909…, 0.6363…]
 print(eigh(m).unwrap().values)                      // [2.381…, 4.618…]: (7 ∓ √5) / 2
 print(svdvals(m).unwrap())                          // the same two, descending
 ```
@@ -27,21 +28,29 @@ dependencies {
 
 The coordinate names the package, `lapack`; the module a program imports is `sh.sysl.lapack`.
 
+The matrix is [`blas`](https://github.com/sysl-lang/blas)'s `MatrixView[T]` — one column-major
+view for both packages, so a matrix LAPACK answered is a `gemm` operand as it stands — and `blas`
+comes with this package; `import sh.sysl.blas.MatrixView` needs no `dependencies` entry of its own.
+
 ## Which LAPACK
 
-**macOS: Accelerate, with nothing to install.** `@link("lapack")` becomes `-llapack`, which the macOS
-SDK answers with Accelerate's `libLAPACK.dylib` — its classic interface (`dgesv_`, 32-bit integers).
+**The same two features as `blas`, and each turns on its namesake there**, so the BLAS and the
+LAPACK of one build are always one library's.
 
-**OpenBLAS, on macOS or anywhere:** name its directory at the build.
+**`platform` (the default): Accelerate on macOS, with nothing to install.** `@link("lapack")` becomes
+`-llapack`, which the macOS SDK answers with Accelerate's `libLAPACK.dylib` — its classic interface
+(`dgesv_`, 32-bit integers). Off macOS it is OpenBLAS (`-lopenblas`, which carries LAPACK).
+
+**`openblas`: OpenBLAS, on macOS or anywhere**, found through `openblas.pc` (keg-only under Homebrew):
 
 ```
 brew install openblas
-sysl test . --link-path /opt/homebrew/opt/openblas/lib
+PKG_CONFIG_PATH=/opt/homebrew/opt/openblas/lib/pkgconfig sysl test . --features openblas
 ```
 
-Homebrew's `liblapack.dylib` there is OpenBLAS (a link to `libopenblas.dylib`), and `--link-path`
-also writes the run-time path. **On Linux**, `-llapack` is the distribution's LAPACK — install
-`liblapack-dev` or `libopenblas-dev`. `otool -L` / `ldd` on a binary says which one it got.
+A consumer chooses it in its own manifest: `lapack { git = "github.com/sysl-lang/lapack", version =
+"0.1.0", features = [openblas] }`. On Linux, `libopenblas-dev` provides it. `otool -L` / `ldd` on a
+binary says which library it got.
 
 The suite passes against both Accelerate and OpenBLAS.
 
@@ -53,15 +62,16 @@ type, every argument an address and each `character` argument's hidden length ex
 
 | | |
 |---|---|
-| **`Mat[T]`** | a column-major view: `data: []T`, `rows`, `cols`, `ld` (the distance between columns). `mat(data, m, n)`, `strided(data, m, n, ld)`, `from_ptr(p, m, n, ld)` (storage C or an interpreter owns), `vector(xs)`, `zeros(m, n)`; `at`, `set`, `column`. **Nothing is copied to make one**, so a block of a larger matrix, a `Buf`'s storage or a nex array is handed over where it lies |
+| **`MatrixView[T]`** | `blas`'s column-major view: `data: []T`, `rows`, `cols`, `ld` (the distance between columns). `MatrixView.of(xs, m, n)`, `MatrixView.strided(xs, m, n, ld)`, `MatrixView.from_ptr(p, m, n, ld)` (storage C or an interpreter owns), each checked against its storage when made; `block`, `col`, `row`, `at`, `set`. **Nothing is copied to make one**, so a block of a larger matrix, a `Buf`'s storage or a nex array is handed over where it lies. Every function here takes these and answers them over fresh storage |
+| `zeros(m, n)` | a fresh m × n matrix of zeros |
 | solving | `solve(A, B)` (`?gesv`), `lstsq(A, B)` (`?gelsd`, minimum norm, any rank), `solve_triangular(A, B, upper)` (`?trtrs`), `lu_solve(lu, B)` (`?getrs`), `chol_solve(L, B, upper)` (`?potrs`) |
 | matrices | `inv(A)` (`?getrf` + `?getri`), `det(A)` (`?getrf`; exactly 0 for a zero pivot), `rcond(A)` (`?gecon`, 1-norm) |
 | factorizations | `lu(A)` → `Lu { l, u, perm, factors, ipiv }` with `A[perm[i], :] == (L U)[i, :]`; `chol(A, upper)`; `qr(A)` → thin `Qr { q, r }` (`?geqrf` + `?orgqr`/`?ungqr`) |
 | eigenvalues | `eigvals(A)`, `eig(A)` → `Eig { values, vectors }`, always complex (`?geev`); `eigh(A)` → `Eigh { values, vectors }`, real ascending values (`?syevd`/`?heevd`) |
 | SVD | `svd(A)` → thin `Svd { u, s, v }` with A = U diag(s) Vᴴ; `svdvals(A)` (`?gesdd`) |
 | in place | `solve_inplace(A, ipiv, B)`, `lu_inplace(A, ipiv)`, `chol_inplace(A, upper)`, `qr_inplace(A, tau)`: work in the caller's storage, answer LAPACK's `info` |
-| `Scalar` | the trait over `f32`, `real`, `Complex[f32]`, `Complex[real]` that every function is generic over; `T.gesv(…)`, `T.gesvd(…)` … reach each routine at the right letter |
-| `lamch[F](c)` | LAPACK's machine parameters |
+| `Scalar` | the trait over `f32`, `real`, `Complex[f32]`, `Complex[real]` that every function is generic over; it extends `blas`'s `Element`, whose `Real` it uses; `T.gesv(…)`, `T.gesvd(…)` … reach each routine at the right letter |
+| `lamch[F](c)` | LAPACK's machine parameters, for `F` a `LapackWidth` (`f32`, `real`) |
 
 **These are the functions of nex's linear-algebra prelude, and each makes the call nex's compiler
 emits** — the same routine, its input copied into the same dense layout, the workspace sized by the
@@ -72,7 +82,8 @@ compiled nex answers on the same LAPACK.
 routine and the cause, from LAPACK's `info`: *"solve: dgesv: matrix is singular (U(2,2) = 0)"*,
 *"chol: dpotrf: matrix is not positive definite (leading minor 2)"*, *"eigh: dsyevd: failed to
 converge (info 3)"*, and a shape that does not fit before LAPACK is called (*"solve: the matrix is
-not square (2 × 3)"*). `Error.info()` gives LAPACK's number back. The value forms never write their
+not square (2 × 3)"*). A view `blas` refused converts through `?` into a shape error
+(*"MatrixView: the view reaches past its storage"*). `Error.info()` gives LAPACK's number back. The value forms never write their
 arguments; workspace queries are made internally.
 
 ## What is deliberately absent
@@ -94,7 +105,7 @@ arguments; workspace queries are made internally.
 
 ```
 sysl test .
-sysl test . --link-path /opt/homebrew/opt/openblas/lib
+PKG_CONFIG_PATH=/opt/homebrew/opt/openblas/lib/pkgconfig sysl test . --features openblas
 SYSL_EXTRA_CFLAGS="-fsanitize=address -g" sysl test .
 ```
 

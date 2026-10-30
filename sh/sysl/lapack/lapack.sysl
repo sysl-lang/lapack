@@ -1,5 +1,6 @@
 module sh.sysl.lapack
 
+import sh.sysl.blas.{MatrixView, Width}
 import sysl.math.{Float, max, min}
 import sysl.math.complex.Complex
 import sysl.slices.as_mut_ptr
@@ -20,6 +21,9 @@ import sysl.slices.as_mut_ptr
 /** Room for `n` elements, all zero. */
 private fresh[T: Zero](n: usize) -> []T = [T.zero(); n]
 
+/** A workspace size LAPACK answered in a `work(1)` of real width `F`, as a count of at least 1. */
+private[lapack] count[F: Width](x: F) -> usize = if x < 1.0 then 1 else usize(x.to_real())
+
 /** `x` as a Fortran `integer`. Every extent is checked by `fits` before it gets here. */
 private int(x: usize) -> i32 = i32(x)
 
@@ -28,8 +32,9 @@ private complex_of[T: Scalar](x: T) -> Complex[T::Real] = Complex(T.real_part(x)
 
 // -- Solving --------------------------------------------------------------------------------------
 
-/** `X` with `A X = B`, A square (`?gesv`). A vector right-hand side is `vector(b)`. */
-solve[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
+/** `X` with `A X = B`, A square (`?gesv`). A vector right-hand side is an n × 1 view,
+ * `MatrixView.of(b, b.len, 1)`. */
+solve[T: Scalar](a: MatrixView[T], b: MatrixView[T]) -> Result[MatrixView[T], Error]
     square("solve", a)?
     fits("solve", b)?
 
@@ -47,7 +52,7 @@ solve[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
 /** The minimum-norm least-squares `X` minimizing ‖A X − B‖, A any shape and any rank (`?gelsd`,
  * singular values below machine precision taken as zero: `rcond = -1`).
  */
-lstsq[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
+lstsq[T: Scalar](a: MatrixView[T], b: MatrixView[T]) -> Result[MatrixView[T], Error]
     fits("lstsq", a)?
     fits("lstsq", b)?
 
@@ -58,7 +63,7 @@ lstsq[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
     val nrhs = b.cols
     val f = dense(a)
     val mx = max(max(m, n), 1)
-    val x: Mat[T] = zeros(mx, nrhs)
+    val x: MatrixView[T] = zeros(mx, nrhs)
 
     for j in 0..<nrhs
         for i in 0..<m do x.set(i, j, b.at(i, j))
@@ -82,14 +87,14 @@ lstsq[T: Scalar](a: Mat[T], b: Mat[T]) -> Result[Mat[T], Error]
 
     T.gelsd(&int(m), &int(n), &int(nrhs), f.ptr(), &int(f.ld), x.ptr(), &int(mx), as_mut_ptr(sv), &rcond, &rank, &query, &-1, as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
+    var work: []T = fresh(count(T.real_part(query)))
 
     T.gelsd(&int(m), &int(n), &int(nrhs), f.ptr(), &int(f.ld), x.ptr(), &int(mx), as_mut_ptr(sv), &rcond, &rank, as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
     check[T]("lstsq", "gelsd", info, Means.Unconverged)?
-    Ok(strided(x.data, n, nrhs, mx))
+    Ok(x.block(0, 0, n, nrhs)?)
 
 /** `X` with `A X = B` for a triangular A, the lower triangle or the `upper` one read (`?trtrs`). */
-solve_triangular[T: Scalar](a: Mat[T], b: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
+solve_triangular[T: Scalar](a: MatrixView[T], b: MatrixView[T], upper: bool = false) -> Result[MatrixView[T], Error]
     square("solve_triangular", a)?
     fits("solve_triangular", b)?
 
@@ -105,7 +110,7 @@ solve_triangular[T: Scalar](a: Mat[T], b: Mat[T], upper: bool = false) -> Result
 // -- Inverse, determinant, condition --------------------------------------------------------------
 
 /** The inverse of a square A (`?getrf`, then `?getri`). */
-inv[T: Scalar](a: Mat[T]) -> Result[Mat[T], Error]
+inv[T: Scalar](a: MatrixView[T]) -> Result[MatrixView[T], Error]
     square("inv", a)?
 
     val f = dense(a)
@@ -120,7 +125,7 @@ inv[T: Scalar](a: Mat[T]) -> Result[Mat[T], Error]
 
     T.getri(&n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &query, &-1, &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
+    var work: []T = fresh(count(T.real_part(query)))
 
     T.getri(&n, f.ptr(), &int(f.ld), as_mut_ptr(ipiv), as_mut_ptr(work), &int(work.len), &info)
     check[T]("inv", "getri", info, Means.Singular)?
@@ -129,7 +134,7 @@ inv[T: Scalar](a: Mat[T]) -> Result[Mat[T], Error]
 /** The determinant of a square A: the product of `?getrf`'s U diagonal, its sign flipped once per
  * row interchange, and exactly zero where a pivot is.
  */
-det[T: Scalar](a: Mat[T]) -> Result[T, Error]
+det[T: Scalar](a: MatrixView[T]) -> Result[T, Error]
     square("det", a)?
 
     val f = dense(a)
@@ -155,7 +160,7 @@ det[T: Scalar](a: Mat[T]) -> Result[T, Error]
  * 1 for a well-conditioned matrix, near machine precision for a nearly singular one, and an
  * `Error` for an exactly singular one.
  */
-rcond[T: Scalar](a: Mat[T]) -> Result[T::Real, Error]
+rcond[T: Scalar](a: MatrixView[T]) -> Result[T::Real, Error]
     square("rcond", a)?
 
     var anorm: T::Real = 0.0
@@ -191,16 +196,16 @@ rcond[T: Scalar](a: Mat[T]) -> Result[T::Real, Error]
  * and `ipiv` are LAPACK's own, which `lu_solve` reads.
  */
 struct Lu[T]
-    l: Mat[T]
-    u: Mat[T]
+    l: MatrixView[T]
+    u: MatrixView[T]
     perm: []usize
-    factors: Mat[T]
+    factors: MatrixView[T]
     ipiv: []i32
 
 /** The LU factorization with partial pivoting of any A (`?getrf`). A singular A factors: its U has
  * a zero on the diagonal, and solving with it is what fails.
  */
-lu[T: Scalar](a: Mat[T]) -> Result[Lu[T], Error]
+lu[T: Scalar](a: MatrixView[T]) -> Result[Lu[T], Error]
     fits("lu", a)?
 
     val m = a.rows
@@ -213,8 +218,8 @@ lu[T: Scalar](a: Mat[T]) -> Result[Lu[T], Error]
     T.getrf(&int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(ipiv), &info)
     check[T]("lu", "getrf", info, Means.Nothing)?
 
-    val l: Mat[T] = zeros(m, k)
-    val u: Mat[T] = zeros(k, n)
+    val l: MatrixView[T] = zeros(m, k)
+    val u: MatrixView[T] = zeros(k, n)
 
     for j in 0..<k
         for i in 0..<m do l.set(i, j, if i > j then f.at(i, j) elif i == j then T.one() else T.zero())
@@ -236,7 +241,7 @@ lu[T: Scalar](a: Mat[T]) -> Result[Lu[T], Error]
     Ok(Lu(l, u, perm, f, ipiv))
 
 /** `X` with `A X = B` from `lu(A)` of a square A (`?getrs`). */
-lu_solve[T: Scalar](f: Lu[T], b: Mat[T]) -> Result[Mat[T], Error]
+lu_solve[T: Scalar](f: Lu[T], b: MatrixView[T]) -> Result[MatrixView[T], Error]
     square("lu_solve", f.factors)?
     fits("lu_solve", b)?
 
@@ -256,7 +261,7 @@ lu_solve[T: Scalar](f: Lu[T], b: Mat[T]) -> Result[Mat[T], Error]
  * A = L Lᴴ, or with `upper`, U with A = Uᴴ U. Only that triangle of A is read and the other triangle
  * of the answer is zero.
  */
-chol[T: Scalar](a: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
+chol[T: Scalar](a: MatrixView[T], upper: bool = false) -> Result[MatrixView[T], Error]
     square("chol", a)?
 
     val f = dense(a)
@@ -274,7 +279,7 @@ chol[T: Scalar](a: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
     Ok(f)
 
 /** `X` with `A X = B` from `chol(A, upper)` (`?potrs`). */
-chol_solve[T: Scalar](factor: Mat[T], b: Mat[T], upper: bool = false) -> Result[Mat[T], Error]
+chol_solve[T: Scalar](factor: MatrixView[T], b: MatrixView[T], upper: bool = false) -> Result[MatrixView[T], Error]
     square("chol_solve", factor)?
     fits("chol_solve", b)?
 
@@ -291,11 +296,11 @@ chol_solve[T: Scalar](factor: Mat[T], b: Mat[T], upper: bool = false) -> Result[
  * k = min(m, n).
  */
 struct Qr[T]
-    q: Mat[T]
-    r: Mat[T]
+    q: MatrixView[T]
+    r: MatrixView[T]
 
 /** The thin QR factorization of any A (`?geqrf`, then `?orgqr` / `?ungqr`). */
-qr[T: Scalar](a: Mat[T]) -> Result[Qr[T], Error]
+qr[T: Scalar](a: MatrixView[T]) -> Result[Qr[T], Error]
     fits("qr", a)?
 
     val m = a.rows
@@ -308,12 +313,12 @@ qr[T: Scalar](a: Mat[T]) -> Result[Qr[T], Error]
 
     T.geqrf(&int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(tau), &query, &-1, &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
+    var work: []T = fresh(count(T.real_part(query)))
 
     T.geqrf(&int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(tau), as_mut_ptr(work), &int(work.len), &info)
     check[T]("qr", "geqrf", info, Means.Nothing)?
 
-    val r: Mat[T] = zeros(k, n)
+    val r: MatrixView[T] = zeros(k, n)
 
     for j in 0..<n
         for i in 0..<k do r.set(i, j, if i <= j then f.at(i, j) else T.zero())
@@ -321,18 +326,18 @@ qr[T: Scalar](a: Mat[T]) -> Result[Qr[T], Error]
     query = T.zero()
     T.ungqr(&int(m), &int(k), &int(k), f.ptr(), &int(f.ld), as_mut_ptr(tau), &query, &-1, &info)
 
-    var gen: []T = fresh(T.real_part(query).to_count())
+    var gen: []T = fresh(count(T.real_part(query)))
 
     T.ungqr(&int(m), &int(k), &int(k), f.ptr(), &int(f.ld), as_mut_ptr(tau), as_mut_ptr(gen), &int(gen.len), &info)
     check[T]("qr", if T.is_complex() then "ungqr" else "orgqr", info, Means.Nothing)?
-    Ok(Qr(strided(f.data, m, k, f.ld), r))
+    Ok(Qr(f.block(0, 0, m, k)?, r))
 
 // -- Eigenvalues ----------------------------------------------------------------------------------
 
 /** The eigenvalues of a general square A, always complex (`?geev`), in LAPACK's order: unsorted, a
  * conjugate pair adjacent with its positive imaginary part first.
  */
-eigvals[T: Scalar](a: Mat[T]) -> Result[[]Complex[T::Real], Error]
+eigvals[T: Scalar](a: MatrixView[T]) -> Result[[]Complex[T::Real], Error]
     val (values, _) = general_eigen(a, "eigvals", false)?
 
     Ok(values)
@@ -341,20 +346,20 @@ eigvals[T: Scalar](a: Mat[T]) -> Result[[]Complex[T::Real], Error]
 struct Eig[F: Float]
     values: []Complex[F]
     /** The eigenvectors as columns, each of unit 2-norm with its largest component real. */
-    vectors: Mat[Complex[F]]
+    vectors: MatrixView[Complex[F]]
 
 /** The eigenvalues and right eigenvectors of a general square A, always complex (`?geev`). */
-eig[T: Scalar](a: Mat[T]) -> Result[Eig[T::Real], Error]
+eig[T: Scalar](a: MatrixView[T]) -> Result[Eig[T::Real], Error]
     val (values, vectors) = general_eigen(a, "eig", true)?
 
     Ok(Eig(values, vectors))
 
-private general_eigen[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[([]Complex[T::Real], Mat[Complex[T::Real]]), Error]
+private general_eigen[T: Scalar](a: MatrixView[T], name: string, vectors: bool) -> Result[([]Complex[T::Real], MatrixView[Complex[T::Real]]), Error]
     square(name, a)?
 
     val n = a.rows
     val f = dense(a)
-    val vr: Mat[T] = if vectors then zeros(n, n) else zeros(1, 1)
+    val vr: MatrixView[T] = if vectors then zeros(n, n) else zeros(1, 1)
     var vl: []T = fresh(1)
     var w: []T = fresh(if T.is_complex() then n else 1)
     var wr: []T::Real = [0.0; max(n, 1)]
@@ -366,7 +371,7 @@ private general_eigen[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Resu
 
     T.geev(&u8('N'), &jobvr, &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), as_mut_ptr(wr), as_mut_ptr(wi), as_mut_ptr(vl), &1, vr.ptr(), &int(vr.ld), &query, &-1, as_mut_ptr(rwork), &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
+    var work: []T = fresh(count(T.real_part(query)))
 
     T.geev(&u8('N'), &jobvr, &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), as_mut_ptr(wr), as_mut_ptr(wi), as_mut_ptr(vl), &1, vr.ptr(), &int(vr.ld), as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), &info)
     check[T](name, "geev", info, Means.Unconverged)?
@@ -375,7 +380,7 @@ private general_eigen[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Resu
 
     for i in 0..<n do values[i] = if T.is_complex() then complex_of(w[i]) else Complex(wr[i], wi[i])
 
-    val vecs: Mat[Complex[T::Real]] = zeros(if vectors then n else 0, if vectors then n else 0)
+    val vecs: MatrixView[Complex[T::Real]] = zeros(if vectors then n else 0, if vectors then n else 0)
 
     if vectors
         for j in 0..<n
@@ -396,12 +401,12 @@ struct Eigh[T, F: Float]
     /** The eigenvalues, real and ascending. */
     values: []F
     /** The orthonormal eigenvectors as columns, in the values' order. */
-    vectors: Mat[T]
+    vectors: MatrixView[T]
 
 /** The eigenvalues and eigenvectors of a symmetric / Hermitian A, its lower triangle read
  * (`?syevd` / `?heevd`).
  */
-eigh[T: Scalar](a: Mat[T]) -> Result[Eigh[T, T::Real], Error]
+eigh[T: Scalar](a: MatrixView[T]) -> Result[Eigh[T, T::Real], Error]
     square("eigh", a)?
 
     val n = a.rows
@@ -414,8 +419,8 @@ eigh[T: Scalar](a: Mat[T]) -> Result[Eigh[T, T::Real], Error]
 
     T.heevd(&u8('V'), &u8('L'), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), &query, &-1, &rquery, &-1, &iquery, &-1, &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
-    var rwork: []T::Real = [0.0; if T.is_complex() then rquery.to_count() else 1]
+    var work: []T = fresh(count(T.real_part(query)))
+    var rwork: []T::Real = [0.0; if T.is_complex() then count(rquery) else 1]
     var iwork: []i32 = fresh(usize(max(iquery, 1)))
 
     T.heevd(&u8('V'), &u8('L'), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(w), as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), &int(rwork.len), as_mut_ptr(iwork), &int(iwork.len), &info)
@@ -426,15 +431,15 @@ eigh[T: Scalar](a: Mat[T]) -> Result[Eigh[T, T::Real], Error]
 
 /** The thin SVD A = U diag(s) Vᴴ: U m × k, `s` the k singular values descending, V n × k. */
 struct Svd[T, F: Float]
-    u: Mat[T]
+    u: MatrixView[T]
     s: []F
-    v: Mat[T]
+    v: MatrixView[T]
 
 /** The thin SVD of any A (`?gesdd`, `jobz = 'S'`). */
-svd[T: Scalar](a: Mat[T]) -> Result[Svd[T, T::Real], Error]
+svd[T: Scalar](a: MatrixView[T]) -> Result[Svd[T, T::Real], Error]
     val (u, s, vh) = singular(a, "svd", true)?
     val k = s.len
-    val v: Mat[T] = zeros(a.cols, k)
+    val v: MatrixView[T] = zeros(a.cols, k)
 
     for j in 0..<k
         for i in 0..<a.cols do v.set(i, j, T.conjugate(vh.at(j, i)))
@@ -442,12 +447,12 @@ svd[T: Scalar](a: Mat[T]) -> Result[Svd[T, T::Real], Error]
     Ok(Svd(u, s, v))
 
 /** The singular values of any A, descending (`?gesdd`, `jobz = 'N'`). */
-svdvals[T: Scalar](a: Mat[T]) -> Result[[]T::Real, Error]
+svdvals[T: Scalar](a: MatrixView[T]) -> Result[[]T::Real, Error]
     val (_, s, _) = singular(a, "svdvals", false)?
 
     Ok(s)
 
-private singular[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[(Mat[T], []T::Real, Mat[T]), Error]
+private singular[T: Scalar](a: MatrixView[T], name: string, vectors: bool) -> Result[(MatrixView[T], []T::Real, MatrixView[T]), Error]
     fits(name, a)?
 
     val m = a.rows
@@ -455,8 +460,8 @@ private singular[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[(M
     val k = min(m, n)
     val f = dense(a)
     var s: []T::Real = [0.0; k]
-    val u: Mat[T] = if vectors then zeros(m, k) else zeros(1, 1)
-    val vh: Mat[T] = if vectors then zeros(k, n) else zeros(1, 1)
+    val u: MatrixView[T] = if vectors then zeros(m, k) else zeros(1, 1)
+    val vh: MatrixView[T] = if vectors then zeros(k, n) else zeros(1, 1)
     var iwork: []i32 = fresh(max(k * 8, 1))
     var rwork: []T::Real = [0.0; 1]
 
@@ -472,7 +477,7 @@ private singular[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[(M
 
     T.gesdd(&jobz, &int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(s), u.ptr(), &int(u.ld), vh.ptr(), &int(vh.ld), &query, &-1, as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
+    var work: []T = fresh(count(T.real_part(query)))
 
     T.gesdd(&jobz, &int(m), &int(n), f.ptr(), &int(f.ld), as_mut_ptr(s), u.ptr(), &int(u.ld), vh.ptr(), &int(vh.ld), as_mut_ptr(work), &int(work.len), as_mut_ptr(rwork), as_mut_ptr(iwork), &info)
     check[T](name, "gesdd", info, Means.Unconverged)?
@@ -484,7 +489,7 @@ private singular[T: Scalar](a: Mat[T], name: string, vectors: bool) -> Result[(M
  * solution. Answers LAPACK's `info` — above zero, U(info, info) is exactly zero and B is not a
  * solution — and an `Error` only for shapes that do not fit.
  */
-solve_inplace[T: Scalar](a: Mat[T], ipiv: []i32, b: Mat[T]) -> Result[i32, Error]
+solve_inplace[T: Scalar](a: MatrixView[T], ipiv: []i32, b: MatrixView[T]) -> Result[i32, Error]
     square("solve_inplace", a)?
     fits("solve_inplace", b)?
 
@@ -500,7 +505,7 @@ solve_inplace[T: Scalar](a: Mat[T], ipiv: []i32, b: Mat[T]) -> Result[i32, Error
 /** `?getrf` where A lies: L below the diagonal, U on and above it, the pivots in `ipiv`. Answers
  * LAPACK's `info`: above zero, U(info, info) is exactly zero.
  */
-lu_inplace[T: Scalar](a: Mat[T], ipiv: []i32) -> Result[i32, Error]
+lu_inplace[T: Scalar](a: MatrixView[T], ipiv: []i32) -> Result[i32, Error]
     fits("lu_inplace", a)?
 
     if ipiv.len < min(a.rows, a.cols) then return shape("lu_inplace", s"ipiv holds ${ipiv.len} pivots; min(m, n) is ${min(a.rows, a.cols)}")
@@ -514,7 +519,7 @@ lu_inplace[T: Scalar](a: Mat[T], ipiv: []i32) -> Result[i32, Error]
 /** `?potrf` where A lies: the triangle it reads overwritten with the factor, the other untouched.
  * Answers LAPACK's `info`: above zero, the leading minor of that order is not positive definite.
  */
-chol_inplace[T: Scalar](a: Mat[T], upper: bool = false) -> Result[i32, Error]
+chol_inplace[T: Scalar](a: MatrixView[T], upper: bool = false) -> Result[i32, Error]
     square("chol_inplace", a)?
 
     var info: i32 = 0
@@ -526,7 +531,7 @@ chol_inplace[T: Scalar](a: Mat[T], upper: bool = false) -> Result[i32, Error]
 /** `?geqrf` where A lies: R on and above the diagonal, the Householder reflectors below it, their
  * scales in `tau`. Answers LAPACK's `info`, which is 0.
  */
-qr_inplace[T: Scalar](a: Mat[T], tau: []T) -> Result[i32, Error]
+qr_inplace[T: Scalar](a: MatrixView[T], tau: []T) -> Result[i32, Error]
     fits("qr_inplace", a)?
 
     if tau.len < min(a.rows, a.cols) then return shape("qr_inplace", s"tau holds ${tau.len} elements; min(m, n) is ${min(a.rows, a.cols)}")
@@ -536,7 +541,7 @@ qr_inplace[T: Scalar](a: Mat[T], tau: []T) -> Result[i32, Error]
 
     T.geqrf(&int(a.rows), &int(a.cols), a.ptr(), &int(a.ld), as_mut_ptr(tau), &query, &-1, &info)
 
-    var work: []T = fresh(T.real_part(query).to_count())
+    var work: []T = fresh(count(T.real_part(query)))
 
     T.geqrf(&int(a.rows), &int(a.cols), a.ptr(), &int(a.ld), as_mut_ptr(tau), as_mut_ptr(work), &int(work.len), &info)
     check[T]("qr_inplace", "geqrf", info, Means.Nothing)?
@@ -549,4 +554,4 @@ qr_inplace[T: Scalar](a: Mat[T], tau: []T) -> Result[i32, Error]
  * `'R'` 1 where rounding occurs, `'M'` the minimum exponent, `'U'` the underflow threshold, `'L'` the
  * maximum exponent, `'O'` the overflow threshold. Any other letter answers 0.
  */
-lamch[F: Width](cmach: u8) -> F = F.machine(cmach)
+lamch[F: LapackWidth](cmach: u8) -> F = F.machine(cmach)

@@ -1,6 +1,7 @@
 module sh.sysl.lapack
 @tests
 
+import sh.sysl.blas.MatrixView
 import sysl.math.complex.Complex
 
 // Eigenvalues and the SVD. The oracles: a rotation's eigenvalues cos θ ± i sin θ, a triangular
@@ -10,7 +11,7 @@ import sysl.math.complex.Complex
 
 // -- eigvals, eig ---------------------------------------------------------------------------------
 
-private rotation[T: Scalar](theta: real) -> Mat[T] =
+private rotation[T: Scalar](theta: real) -> MatrixView[T] =
     from_rows(2, 2, [theta.cos(), -theta.sin(), theta.sin(), theta.cos()])
 
 @test
@@ -30,13 +31,13 @@ eigvals_of_a_rotation_are_cos_plus_and_minus_i_sin() =
 
 @test
 eigvals_of_a_complex_triangular_matrix_are_its_diagonal() =
-    val a: Mat[Complex[real]] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 0.0, 0.0, 3.0, -1.0])
+    val a: MatrixView[Complex[real]] = from_rows_c(2, 2, [1.0, 1.0, 2.0, 0.0, 0.0, 0.0, 3.0, -1.0])
     val v = ok(eigvals(a), "zeigvals")
 
     assert_complex(v[0], 1.0, 1.0, 1.0e-15, "λ₁")
     assert_complex(v[1], 3.0, -1.0, 1.0e-15, "λ₂")
 
-private eig_residual[T: Scalar](tol: real, a: Mat[T])
+private eig_residual[T: Scalar](tol: real, a: MatrixView[T])
     val e = ok(eig(a), "eig")
     val n = a.rows
 
@@ -84,8 +85,8 @@ eigvals_refuses_a_non_square_matrix() =
 
 // -- eigh -----------------------------------------------------------------------------------------
 
-private second_difference[T: Scalar](n: usize) -> Mat[T]
-    val a: Mat[T] = zeros(n, n)
+private second_difference[T: Scalar](n: usize) -> MatrixView[T]
+    val a: MatrixView[T] = zeros(n, n)
 
     for i in 0..<n
         a.set(i, i, T.from_parts(2.0, 0.0))
@@ -98,13 +99,13 @@ private second_difference[T: Scalar](n: usize) -> Mat[T]
 
 private eigh_spectrum[T: Scalar](tol: real)
     val n = 5
-    val a: Mat[T] = second_difference(n)
+    val a: MatrixView[T] = second_difference(n)
     val e = ok(eigh(a), "eigh")
     val pi = 3.141592653589793
 
     for k in 0..<n do assert_close(e.values[k].to_real(), 2.0 - 2.0 * (real(k + 1) * pi / real(n + 1)).cos(), tol, s"${T.prefix()} λ$k")
 
-    val lambda: Mat[T] = zeros(n, n)
+    val lambda: MatrixView[T] = zeros(n, n)
 
     for k in 0..<n do lambda.set(k, k, T.of_real(e.values[k]))
 
@@ -121,7 +122,7 @@ eigh_of_the_second_difference_matrix_is_its_closed_form_spectrum() =
 @test
 eigh_of_a_hermitian_matrix_is_real_and_ascending() =
     // [[2, i], [−i, 2]] has eigenvalues 1 and 3.
-    val a: Mat[Complex[real]] = from_rows_c(2, 2, [2.0, 0.0, 0.0, 1.0, 0.0, -1.0, 2.0, 0.0])
+    val a: MatrixView[Complex[real]] = from_rows_c(2, 2, [2.0, 0.0, 0.0, 1.0, 0.0, -1.0, 2.0, 0.0])
     val e = ok(eigh(a), "zheevd")
 
     assert_close(e.values[0], 1.0, 1.0e-15, "λ₁")
@@ -129,7 +130,7 @@ eigh_of_a_hermitian_matrix_is_real_and_ascending() =
 
 @test
 eigh_reads_the_lower_triangle_only() =
-    val a: Mat[real] = from_rows(2, 2, [2.0, 99.0, 1.0, 2.0])
+    val a: MatrixView[real] = from_rows(2, 2, [2.0, 99.0, 1.0, 2.0])
     val e = ok(eigh(a), "dsyevd")
 
     assert_close(e.values[0], 1.0, 1.0e-15, "λ₁")
@@ -140,7 +141,7 @@ eigh_reads_the_lower_triangle_only() =
 @test
 svd_of_a_rank_one_matrix_has_one_singular_value() =
     // u = (1, 2, 2), v = (3, 4): A = u vᵀ has σ₁ = |u|·|v| = 15 and σ₂ = 0.
-    val a: Mat[real] = from_rows(3, 2, [3.0, 4.0, 6.0, 8.0, 6.0, 8.0])
+    val a: MatrixView[real] = from_rows(3, 2, [3.0, 4.0, 6.0, 8.0, 6.0, 8.0])
     val s = ok(svdvals(a), "svdvals")
 
     assert_eq(s.len, 2)
@@ -158,7 +159,7 @@ svd_of_a_rank_one_matrix_has_one_singular_value() =
 
 @test
 svdvals_of_a_diagonal_matrix_are_its_absolute_values_descending() =
-    val d: Mat[real] = from_rows(3, 3, [3.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 1.0])
+    val d: MatrixView[real] = from_rows(3, 3, [3.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 1.0])
     val s = ok(svdvals(d), "svdvals diag")
 
     assert_close(s[0], 5.0, 0.0, "σ₁")
@@ -170,10 +171,10 @@ svdvals_of_a_diagonal_matrix_are_its_absolute_values_descending() =
     assert_close(real(z[0]), 2.0, 0.0, "|−2i|")
 
 private svd_reproduces[T: Scalar](tol: real, m: usize, n: usize, xs: []const real)
-    val a: Mat[T] = from_rows_c(m, n, xs)
+    val a: MatrixView[T] = from_rows_c(m, n, xs)
     val f = ok(svd(a), "svd")
     val k = if m < n then m else n
-    val sigma: Mat[T] = zeros(k, k)
+    val sigma: MatrixView[T] = zeros(k, k)
 
     for i in 0..<k do sigma.set(i, i, T.of_real(f.s[i]))
 

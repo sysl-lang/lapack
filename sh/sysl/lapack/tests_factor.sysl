@@ -1,6 +1,7 @@
 module sh.sysl.lapack
 @tests
 
+import sh.sysl.blas.MatrixView
 import sysl.math.complex.Complex
 
 // LU, Cholesky, QR and least squares. The oracles: factors worked by hand, a Cholesky factor chosen
@@ -22,7 +23,7 @@ lu_of_a_2x2_is_the_hand_worked_factorization() =
     assert_eq(f.ipiv[0], 2)
 
 private lu_permutes[T: Scalar](tol: real, m: usize, n: usize, xs: []const real)
-    val a: Mat[T] = from_rows(m, n, xs)
+    val a: MatrixView[T] = from_rows(m, n, xs)
     val f = ok(lu(a), "lu")
     val k = if m < n then m else n
     val prod = matmul(f.l, f.u)
@@ -58,8 +59,8 @@ private val SPD: [9]real = [4.0, 12.0, -16.0, 12.0, 37.0, -43.0, -16.0, -43.0, 9
 private val SPD_L: [9]real = [2.0, 0.0, 0.0, 6.0, 1.0, 0.0, -8.0, 5.0, 3.0]
 
 private chol_recovers[T: Scalar](tol: real)
-    val a: Mat[T] = from_rows(3, 3, SPD)
-    val l: Mat[T] = from_rows(3, 3, SPD_L)
+    val a: MatrixView[T] = from_rows(3, 3, SPD)
+    val l: MatrixView[T] = from_rows(3, 3, SPD_L)
 
     assert_mat(ok(chol(a), "chol"), l, tol, s"${T.prefix()}potrf L")
     assert_mat(ok(chol(a, upper = true), "chol upper"), adjoint(l), tol, s"${T.prefix()}potrf U")
@@ -74,14 +75,14 @@ chol_recovers_the_factor_it_was_built_from() =
 @test
 chol_of_a_hermitian_matrix_has_a_complex_factor() =
     // L = [[2, 0], [−i, 2]]: L Lᴴ = [[4, 2i], [−2i, 5]].
-    val a: Mat[Complex[real]] = from_rows_c(2, 2, [4.0, 0.0, 0.0, 2.0, 0.0, -2.0, 5.0, 0.0])
+    val a: MatrixView[Complex[real]] = from_rows_c(2, 2, [4.0, 0.0, 0.0, 2.0, 0.0, -2.0, 5.0, 0.0])
 
     assert_mat(ok(chol(a), "zpotrf"), from_rows_c(2, 2, [2.0, 0.0, 0.0, 0.0, 0.0, -1.0, 2.0, 0.0]), 1.0e-15, "zpotrf L")
 
 @test
 chol_reads_one_triangle_only() =
     // The upper triangle is garbage; the lower one is SPD's.
-    val a: Mat[real] = from_rows(3, 3, [4.0, 99.0, 99.0, 12.0, 37.0, 99.0, -16.0, -43.0, 98.0])
+    val a: MatrixView[real] = from_rows(3, 3, [4.0, 99.0, 99.0, 12.0, 37.0, 99.0, -16.0, -43.0, 98.0])
 
     assert_mat(ok(chol(a), "chol lower"), from_rows(3, 3, SPD_L), 1.0e-14, "lower only")
 
@@ -103,8 +104,8 @@ chol_reports_the_leading_minor_that_is_not_positive_definite() =
 
 @test
 chol_solve_solves_with_the_factor() =
-    val a: Mat[real] = from_rows(3, 3, SPD)
-    val b: Mat[real] = from_rows(3, 1, [1.0, 2.0, 3.0])
+    val a: MatrixView[real] = from_rows(3, 3, SPD)
+    val b: MatrixView[real] = from_rows(3, 1, [1.0, 2.0, 3.0])
 
     assert_mat(matmul(a, ok(chol_solve(ok(chol(a), "L"), b), "potrs L")), b, 1.0e-11, "A x = b, lower")
     assert_mat(matmul(a, ok(chol_solve(ok(chol(a, upper = true), "U"), b, upper = true), "potrs U")), b, 1.0e-11, "A x = b, upper")
@@ -112,7 +113,7 @@ chol_solve_solves_with_the_factor() =
 // -- qr -------------------------------------------------------------------------------------------
 
 private qr_holds[T: Scalar](tol: real, m: usize, n: usize, xs: []const real)
-    val a: Mat[T] = from_rows_c(m, n, xs)
+    val a: MatrixView[T] = from_rows_c(m, n, xs)
     val f = ok(qr(a), "qr")
     val k = if m < n then m else n
 
@@ -155,7 +156,7 @@ qr_of_a_single_column_is_its_norm() =
 @test
 lstsq_fits_a_line_through_collinear_points_exactly() =
     // (0, 1), (1, 3), (2, 5), (3, 7) lie on y = 1 + 2x.
-    val a: Mat[real] = from_rows(4, 2, [1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0])
+    val a: MatrixView[real] = from_rows(4, 2, [1.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 3.0])
     val x = ok(lstsq(a, from_rows(4, 1, [1.0, 3.0, 5.0, 7.0])), "lstsq")
 
     assert_eq(x.rows, 2)

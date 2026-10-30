@@ -1,6 +1,7 @@
 module sh.sysl.lapack
 @tests
 
+import sh.sysl.blas.{MatrixView, NoTrans, gemm}
 import sh.sysl.lapack.c
 import sysl.math.complex.Complex
 
@@ -48,8 +49,8 @@ dlange_and_zlange_answer_the_norms() =
 
 private gels_line[T: Scalar](tol: real)
     // (0, 1), (1, 3), (2, 5) on y = 1 + 2x, solved by QR.
-    val a: Mat[T] = from_rows(3, 2, [1.0, 0.0, 1.0, 1.0, 1.0, 2.0])
-    val b: Mat[T] = from_rows(3, 1, [1.0, 3.0, 5.0])
+    val a: MatrixView[T] = from_rows(3, 2, [1.0, 0.0, 1.0, 1.0, 1.0, 2.0])
+    val b: MatrixView[T] = from_rows(3, 1, [1.0, 3.0, 5.0])
     var m: i32 = 3
     var n: i32 = 2
     var nrhs: i32 = 1
@@ -59,7 +60,7 @@ private gels_line[T: Scalar](tol: real)
 
     T.gels(&u8('N'), &m, &n, &nrhs, a.ptr(), &m, b.ptr(), &m, &query, &lwork, &info)
 
-    var work: []T = [T.zero(); T.real_part(query).to_count()]
+    var work: []T = [T.zero(); count(T.real_part(query))]
 
     lwork = i32(work.len)
     T.gels(&u8('N'), &m, &n, &nrhs, a.ptr(), &m, b.ptr(), &m, &work[0], &lwork, &info)
@@ -76,7 +77,7 @@ gels_fits_a_line_at_every_type() =
     gels_line[Complex[real]](1.0e-14)
 
 private gesvd_diagonal[T: Scalar](tol: real)
-    val a: Mat[T] = from_rows(2, 2, [0.0, 2.0, -7.0, 0.0])
+    val a: MatrixView[T] = from_rows(2, 2, [0.0, 2.0, -7.0, 0.0])
     var s: []T::Real = [0.0; 2]
     var dummy = [T.zero()]
     var rwork: []T::Real = [0.0; 10]
@@ -88,7 +89,7 @@ private gesvd_diagonal[T: Scalar](tol: real)
 
     T.gesvd(&u8('N'), &u8('N'), &two, &two, a.ptr(), &two, &s[0], &dummy[0], &one, &dummy[0], &one, &query, &lwork, &rwork[0], &info)
 
-    var work: []T = [T.zero(); T.real_part(query).to_count()]
+    var work: []T = [T.zero(); count(T.real_part(query))]
 
     lwork = i32(work.len)
     T.gesvd(&u8('N'), &u8('N'), &two, &two, a.ptr(), &two, &s[0], &dummy[0], &one, &dummy[0], &one, &work[0], &lwork, &rwork[0], &info)
@@ -108,7 +109,7 @@ gesvd_answers_the_singular_values_at_every_type() =
 getrs_solves_the_transposed_system_from_one_factorization() =
     // A = [[1, 2], [3, 4]]: Aᵀ x = (4, 6) at x = (1, 1).
     val f = ok(lu(from_rows[real](2, 2, [1.0, 2.0, 3.0, 4.0])), "lu")
-    val b: Mat[real] = from_rows(2, 1, [4.0, 6.0])
+    val b: MatrixView[real] = from_rows(2, 1, [4.0, 6.0])
     var two: i32 = 2
     var one: i32 = 1
     var info: i32 = 0
@@ -221,7 +222,7 @@ qr_inplace_writes_r_and_the_reflectors() =
 @test
 from_ptr_views_storage_this_program_did_not_lay_out_as_a_matrix() =
     var store = [4.0, 1.0, 0.0, 1.0, 3.0, 0.0]
-    val a = from_ptr(&store[0], 2, 2, 3)
+    val a = MatrixView.from_ptr(&store[0], 2, 2, 3).unwrap()
 
     assert_eq(a.at(1, 1), 3.0)
     assert_close(ok(det(a), "det through a pointer"), 11.0, 1.0e-14, "det")
@@ -233,11 +234,15 @@ from_ptr_views_storage_this_program_did_not_lay_out_as_a_matrix() =
 @test
 a_column_is_a_view_of_the_storage() =
     var store = [1.0, 2.0, 9.0, 3.0, 4.0, 9.0]
-    val col = strided(store, 2, 2, 3).column(1)
+    val col = strided(store, 2, 2, 3).col(1)
 
     assert_eq(col.len, 2)
-    assert_eq(col[0], 3.0)
-    assert_eq(col[1], 4.0)
+    assert_eq(col.at(0), 3.0)
+    assert_eq(col.at(1), 4.0)
+
+    col.set(1, 5.0)
+
+    assert_eq(store[4], 5.0)
 
 // -- Errors ---------------------------------------------------------------------------------------
 
@@ -266,8 +271,8 @@ a_negative_info_names_the_argument_and_the_typed_routine() =
 private inplace_strided[T: Scalar](tol: real)
     // A in a 3-row buffer (ld 3, a sentinel row), B in a 4-row one (ld 4): neither leading dimension
     // is the other's, nor the order.
-    val store: Mat[T] = zeros(3, 2)
-    val rhs: Mat[T] = zeros(4, 2)
+    val store: MatrixView[T] = zeros(3, 2)
+    val rhs: MatrixView[T] = zeros(4, 2)
 
     for j in 0..<2
         store.set(2, j, T.from_parts(-7.0, 0.0))
@@ -299,13 +304,43 @@ solve_inplace_honours_each_leading_dimension_at_every_type() =
     inplace_strided[Complex[f32]](1.0e-6)
     inplace_strided[Complex[real]](1.0e-15)
 
+// -- The view is blas's ----------------------------------------------------------------------------
+
+@test
+a_lapack_answer_is_a_blas_operand() =
+    var a = [4.0, 1.0, 1.0, 3.0]
+    val m = mat(a, 2, 2)
+    var prod = [0.0, 0.0, 0.0, 0.0]
+
+    gemm(NoTrans, NoTrans, 1.0, m, ok(inv(m), "inv"), 0.0, mat(prod, 2, 2)).unwrap()
+
+    assert_close(prod[0], 1.0, 1.0e-15, "(A A⁻¹)₀₀")
+    assert_close(prod[1], 0.0, 1.0e-15, "(A A⁻¹)₁₀")
+    assert_close(prod[2], 0.0, 1.0e-15, "(A A⁻¹)₀₁")
+    assert_close(prod[3], 1.0, 1.0e-15, "(A A⁻¹)₁₁")
+
+private solve_short(xs: []real) -> Result[MatrixView[real], Error]
+    val a = MatrixView.of(xs, 2, 2)?
+
+    solve(a, vector([1.0, 2.0]))
+
+@test
+a_view_blas_refuses_is_a_lapack_shape_error() =
+    val e = err(solve_short([1.0, 2.0, 3.0]), "three elements for 2 × 2")
+
+    assert_eq(e.function, "MatrixView")
+    assert_eq(e.info(), 0)
+    assert_eq(s"$e", "MatrixView: the view reaches past its storage")
+
+    assert_close(ok(solve_short([4.0, 1.0, 1.0, 3.0]), "four").at(1, 0), 7.0 / 11.0, 1.0e-16, "and four is a matrix")
+
 // -- The README's example -------------------------------------------------------------------------
 
 @test
 the_readme_example_answers_what_it_says() =
     var a = [4.0, 1.0, 1.0, 3.0]
-    val m = mat(a, 2, 2)
-    val x = solve(m, vector([1.0, 2.0])).unwrap().data
+    val m = MatrixView.of(a, 2, 2).unwrap()
+    val x = solve(m, MatrixView.of([1.0, 2.0], 2, 1).unwrap()).unwrap().data
     val root5 = 5.0.sqrt()
 
     assert_close(x[0], 1.0 / 11.0, 1.0e-16, "x0")

@@ -1,5 +1,7 @@
 module sh.sysl.lapack
 
+import sh.sysl.blas.{BlasError, MatrixView}
+
 /** Why a call failed, in LAPACK's terms with its 1-based index kept. */
 enum Cause derives Eq
     /** `U(i, i)` is exactly zero (`?getrf`, `?gesv`, `?getri`), or `A(i, i)` is (`?trtrs`). */
@@ -42,6 +44,12 @@ struct Error derives Eq
 impl Display for Error
     display(self, out: *Writer, fmt: FormatSpec) = display_str(self.to_string(), out, fmt)
 
+/** A view `blas` refused to make, as a shape error — so `?` on `MatrixView.of(…)` works in a function
+ * that answers this module's `Error`.
+ */
+impl From[BlasError] for Error
+    from(value: BlasError) -> Error = Error("MatrixView", "", Shape(s"$value"))
+
 /** What a positive `info` means for the routine that answered it. */
 private[lapack] enum Means
     Singular
@@ -72,7 +80,7 @@ private[lapack] check[T: Scalar](function: string, routine: string, info: i32, m
 private[lapack] shape[R](function: string, what: string) -> Result[R, Error] = Err(Error(function, "", Shape(what)))
 
 /** Every extent of `a` fits LAPACK's 32-bit `integer`. */
-private[lapack] fits[T](function: string, a: Mat[T]) -> Result[unit, Error]
+private[lapack] fits[T](function: string, a: MatrixView[T]) -> Result[unit, Error]
     val most = usize(i32::Max)
 
     if a.rows > most || a.cols > most || a.ld > most then return shape(function, s"a ${a.rows} × ${a.cols} matrix is past LAPACK's 32-bit integer")
@@ -80,7 +88,7 @@ private[lapack] fits[T](function: string, a: Mat[T]) -> Result[unit, Error]
     Ok(())
 
 /** `a` is square and fits. */
-private[lapack] square[T](function: string, a: Mat[T]) -> Result[unit, Error]
+private[lapack] square[T](function: string, a: MatrixView[T]) -> Result[unit, Error]
     if a.rows != a.cols then return shape(function, s"the matrix is not square (${a.rows} × ${a.cols})")
 
     fits(function, a)

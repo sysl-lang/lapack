@@ -1,11 +1,15 @@
 module sh.sysl.lapack
 
+import sh.sysl.blas.{Element, Width}
 import sh.sysl.lapack.c
-import sysl.math.Float
 import sysl.math.complex.Complex
 
 /** One of LAPACK's four element types — `f32`, `real`, `Complex[f32]`, `Complex[real]` (`s`, `d`,
  * `c`, `z`) — and its routines under one name each.
+ *
+ * **It extends `blas`'s `Element`**, the same four types with their BLAS routines, so a `T: Scalar`
+ * is also an element `sh.sysl.blas` multiplies, and `T::Real` is `Element`'s: the real type of the
+ * same width, a `blas.Width`.
  *
  * Each routine takes the arguments of its Fortran declaration in `sh.sysl.lapack.c`, every one an
  * address, with the hidden `character` lengths supplied here. Where the real and the complex
@@ -21,10 +25,7 @@ import sysl.math.complex.Complex
  * A generic body reaches them through the type — `T.getrf(…)` — which is how every function in this
  * module is written once for all four.
  */
-trait Scalar: Zero + One + Eq + Neg + Add + Sub + Mul + Div
-    /** The real type of the same width: `f32` or `real`. */
-    type Real: Width
-
+trait Scalar: Element + Zero + One + Eq + Neg + Add + Sub + Mul + Div
     /** LAPACK's letter for the type: `"s"`, `"d"`, `"c"` or `"z"`. */
     prefix() -> string
     is_complex() -> bool
@@ -53,19 +54,13 @@ trait Scalar: Zero + One + Eq + Neg + Add + Sub + Mul + Div
     gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Self, lda: *i32, s: *Self::Real, u: *Self, ldu: *i32, vt: *Self, ldvt: *i32, work: *Self, lwork: *i32, rwork: *Self::Real, info: *i32)
     trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Self, lda: *i32, b: *Self, ldb: *i32, info: *i32)
 
-/** A real width LAPACK has — `f32` or `real` — and the complex routines of that width, which is
- * what `Complex[F]`'s `Scalar` dispatches through: an `impl` covers `Complex[F]` for every `F` at once,
- * so the choice between `c` and `z` is the width's to make.
+/** A real width LAPACK has — `f32` or `real`, `blas`'s `Width` — and the complex routines of that
+ * width, which is what `Complex[F]`'s `Scalar` dispatches through: an `impl` covers `Complex[F]` for
+ * every `F` at once, so the choice between `c` and `z` is the width's to make.
  */
-trait Width: Float
+trait LapackWidth: Width
     /** LAPACK's machine parameter `cmach` (`dlamch` / `slamch`): see `lamch`. */
     machine(cmach: u8) -> Self
-    /** A workspace size LAPACK answered in a `work(1)` of this type, as a count of at least 1. */
-    to_count(self) -> usize
-    /** The value widened to `real`. */
-    to_real(self) -> real
-    /** `x` rounded to this width. */
-    of_real64(x: real) -> Self
 
     cx_prefix() -> string
     cx_gesv(n: *i32, nrhs: *i32, a: *Complex[Self], lda: *i32, ipiv: *i32, b: *Complex[Self], ldb: *i32, info: *i32)
@@ -88,8 +83,6 @@ trait Width: Float
 // -- f32: `s` -------------------------------------------------------------------------------------
 
 impl Scalar for f32
-    type Real = f32
-
     prefix() -> string = "s"
     is_complex() -> bool = false
     real_part(x: f32) -> f32 = x
@@ -119,8 +112,6 @@ impl Scalar for f32
 // -- real: `d` ------------------------------------------------------------------------------------
 
 impl Scalar for real
-    type Real = real
-
     prefix() -> string = "d"
     is_complex() -> bool = false
     real_part(x: real) -> real = x
@@ -149,8 +140,7 @@ impl Scalar for real
 
 // -- Complex[F]: `c` and `z`, through the width ---------------------------------------------------
 
-impl[F: Width] Scalar for Complex[F]
-    type Real = F
+impl[F: LapackWidth] Scalar for Complex[F]
 
     prefix() -> string = F.cx_prefix()
     is_complex() -> bool = true
@@ -180,7 +170,7 @@ impl[F: Width] Scalar for Complex[F]
 
 // -- The widths -----------------------------------------------------------------------------------
 
-impl Width for f32
+impl LapackWidth for f32
     // `slamch`'s values, from `f32`'s own constants: see `c.sysl` for why `slamch` is not called.
     machine(cmach: u8) -> f32 = cmach match
         'E' -> 5.9604645e-8
@@ -194,9 +184,6 @@ impl Width for f32
         'L' -> 128.0
         'O' -> 3.4028235e38
         _ -> 0.0
-    to_count(self) -> usize = if self < 1.0 then 1 else usize(self)
-    to_real(self) -> real = real(self)
-    of_real64(x: real) -> f32 = f32(x)
 
     cx_prefix() -> string = "c"
     cx_gesv(n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, ipiv: *i32, b: *Complex[f32], ldb: *i32, info: *i32) = c.cgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
@@ -216,11 +203,8 @@ impl Width for f32
     cx_gesvd(jobu: *u8, jobvt: *u8, m: *i32, n: *i32, a: *Complex[f32], lda: *i32, s: *f32, u: *Complex[f32], ldu: *i32, vt: *Complex[f32], ldvt: *i32, work: *Complex[f32], lwork: *i32, rwork: *f32, info: *i32) = c.cgesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, info, 1, 1)
     cx_trtrs(uplo: *u8, trans: *u8, diag: *u8, n: *i32, nrhs: *i32, a: *Complex[f32], lda: *i32, b: *Complex[f32], ldb: *i32, info: *i32) = c.ctrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb, info, 1, 1, 1)
 
-impl Width for real
+impl LapackWidth for real
     machine(cmach: u8) -> real = c.dlamch(&cmach, 1)
-    to_count(self) -> usize = if self < 1.0 then 1 else usize(self)
-    to_real(self) -> real = self
-    of_real64(x: real) -> real = x
 
     cx_prefix() -> string = "z"
     cx_gesv(n: *i32, nrhs: *i32, a: *Complex[real], lda: *i32, ipiv: *i32, b: *Complex[real], ldb: *i32, info: *i32) = c.zgesv(n, nrhs, a, lda, ipiv, b, ldb, info)

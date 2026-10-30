@@ -1,74 +1,19 @@
 module sh.sysl.lapack
 
+import sh.sysl.blas.MatrixView
 import sysl.math.max
-import sysl.slices.as_mut_ptr
 
-/** A column-major matrix: element (i, j) at `data[i + j * ld]`, as LAPACK stores one.
- *
- * **A view, not a container.** `data` is any `[]T` — a slice of a `Buf`, of an array, of storage a
- * C library or an interpreter owns (`from_ptr`) — and nothing is copied to make one, so a program's
- * own buffer and a nex array both reach LAPACK where they lie. The leading dimension `ld` is the
- * distance between columns, at least `rows`, so a block of a larger matrix is a `Mat` too.
- *
- * The functions in this module that answer a matrix answer a `Mat` over fresh storage of their own,
- * dense (`ld == max(rows, 1)`).
- */
-struct Mat[T]
-    data: []T
-    rows: usize
-    cols: usize
-    ld: usize
+// The matrix every function here takes and answers is `blas`'s `MatrixView[T]`: column-major,
+// element (i, j) at `data[i + j * ld]`, made over a slice (`MatrixView.of`, `MatrixView.strided`) or
+// over storage C or an interpreter owns (`MatrixView.from_ptr`), with nothing copied. A view made from
+// a slice keeps its backing alive, which is how the fresh storage a function here answers stays valid.
 
-    /** Element (i, j), from 0. */
-    at(self, i: usize, j: usize) -> T = self.data[i + j * self.ld]
-
-    /** Element (i, j) set to `v`; the write lands in the storage the view is over. */
-    set(self, i: usize, j: usize, v: T)
-        var d = self.data
-
-        d[i + j * self.ld] = v
-
-    /** Column `j`, as a view of the storage. */
-    column(self, j: usize) -> []T = self.data[j * self.ld..<j * self.ld + self.rows]
-
-    /** The address of element (0, 0), which is what LAPACK is handed; null for an empty view. */
-    ptr(self) -> *T = as_mut_ptr(self.data)
-
-/** An m × n view of `data`, its columns packed (`ld == rows`). A `data` shorter than m · n traps. */
-mat[T](data: []T, rows: usize, cols: usize) -> Mat[T] = strided(data, rows, cols, max(rows, 1))
-
-/** An m × n view of `data` whose columns are `ld` apart. An `ld` below `rows`, or a `data` too short
- * to hold the last column, traps: either is a mistake in the program, as an index past the end is.
- */
-strided[T](data: []T, rows: usize, cols: usize, ld: usize) -> Mat[T]
-    if ld < max(rows, 1) then panic(s"lapack: a leading dimension of $ld is less than the $rows rows")
-
-    val need = extent(rows, cols, ld)
-
-    if data.len < need then panic(s"lapack: a $rows × $cols matrix with leading dimension $ld needs $need elements; the storage holds ${data.len}")
-
-    Mat(data[..<need], rows, cols, ld)
-
-/** An m × n view of storage at `p` that this program did not allocate — a C array, an interpreter's
- * buffer. Nothing is kept alive by it: the storage must outlive every use of the view.
- */
-from_ptr[T](p: *T, rows: usize, cols: usize, ld: usize) -> Mat[T]
-    if ld < max(rows, 1) then panic(s"lapack: a leading dimension of $ld is less than the $rows rows")
-
-    Mat(p[0..<extent(rows, cols, ld)], rows, cols, ld)
-
-/** `data` as an n × 1 matrix: a right-hand side, or a vector answer read back through `.data`. */
-vector[T](data: []T) -> Mat[T] = mat(data, data.len, 1)
-
-/** A fresh m × n matrix of zeros. */
-zeros[T: Zero](rows: usize, cols: usize) -> Mat[T] = Mat([T.zero(); rows * cols], rows, cols, max(rows, 1))
-
-/** The elements a view of `rows × cols` with columns `ld` apart spans. */
-private extent(rows: usize, cols: usize, ld: usize) -> usize = if rows == 0 || cols == 0 then 0 else ld * (cols - 1) + rows
+/** A fresh m × n matrix of zeros, dense (`ld == max(rows, 1)`). */
+zeros[T: Zero](rows: usize, cols: usize) -> MatrixView[T] = MatrixView([T.zero(); rows * cols], rows, cols, max(rows, 1))
 
 /** A dense copy of `a`, which LAPACK may overwrite: the value forms never write their arguments. */
-private[lapack] dense[T: Zero](a: Mat[T]) -> Mat[T]
-    val out: Mat[T] = zeros(a.rows, a.cols)
+private[lapack] dense[T: Zero](a: MatrixView[T]) -> MatrixView[T]
+    val out: MatrixView[T] = zeros(a.rows, a.cols)
 
     for j in 0..<a.cols
         for i in 0..<a.rows do out.set(i, j, a.at(i, j))
