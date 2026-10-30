@@ -163,6 +163,51 @@ det_follows_the_row_interchanges_and_is_exactly_zero_when_singular() =
 
     assert_complex(i2, -1.0, 0.0, 0.0, "det(i I₂) = i² = −1")
 
+@test
+complex_det_rounds_each_real_product_on_its_own() =
+    // (1.134 + 1.847i)(1.764 + 1.255i): the real part is -0.317609 rounded after each product, one
+    // ulp from the fused value, which is what `acc * d` on `Complex` would give.
+    val ar = 1.134
+    val ai = 1.847
+    val br = 1.764
+    val bi = 1.255
+    val rr = ar * br
+    val ii = ai * bi
+    val ri = ar * bi
+    val ir = ai * br
+    val unfused_re = rr - ii
+    val unfused_im = ri + ir
+    val fused_re = ar.mul_add(br, -ii)
+
+    assert(unfused_re != fused_re, "the fixture tells the fused real part from the unfused")
+
+    val got = ok(det(from_rows_c[Complex[real]](2, 2, [ar, ai, 0.0, 0.0, 0.0, 0.0, br, bi])), "det")
+
+    assert_eq(got.re, unfused_re)
+    assert_eq(got.im, unfused_im)
+
+@test
+complex_det_of_f32_matches_the_unfused_product_and_a_swap_flips_its_sign() =
+    val ar = f32(1.134)
+    val ai = f32(1.847)
+    val br = f32(1.764)
+    val bi = f32(1.255)
+    val rr = ar * br
+    val ii = ai * bi
+    val ri = ar * bi
+    val ir = ai * br
+    val got = ok(det(from_rows_c[Complex[f32]](2, 2, [1.134, 1.847, 0.0, 0.0, 0.0, 0.0, 1.764, 1.255])), "det")
+
+    assert_eq(got.re, rr - ii)
+    assert_eq(got.im, ri + ir)
+
+    val swapped = ok(det(from_rows_c[Complex[real]](2, 2, [0.0, 0.0, 1.134, 1.847, 1.764, 1.255, 0.0, 0.0])), "swapped")
+
+    val p = 1.134 * 1.764
+    val q = 1.847 * 1.255
+
+    assert_eq(swapped.re, -(p - q))
+
 // -- rcond ----------------------------------------------------------------------------------------
 
 @test

@@ -131,6 +131,25 @@ inv[T: Scalar](a: MatrixView[T]) -> Result[MatrixView[T], Error]
     check[T]("inv", "getri", info, Means.Singular)?
     Ok(f)
 
+/** `a * b` with every real product rounded on its own: a complex product is `(ar·br − ai·bi, ar·bi +
+ * ai·br)` with each of the four products bound to a `val` first, since sysl fuses a multiply that
+ * feeds an add in one expression and a `val` between them keeps the two roundings. That is the
+ * product nex's `det` is defined by, so the two agree bit for bit.
+ */
+product[T: Scalar](a: T, b: T) -> T
+    if !T.is_complex() then return a * b
+
+    val ar = T.real_part(a)
+    val ai = T.imag_part(a)
+    val br = T.real_part(b)
+    val bi = T.imag_part(b)
+    val rr = ar * br
+    val ii = ai * bi
+    val ri = ar * bi
+    val ir = ai * br
+
+    T.from_parts((rr - ii).to_real(), (ri + ir).to_real())
+
 /** The determinant of a square A: the product of `?getrf`'s U diagonal, its sign flipped once per
  * row interchange, and exactly zero where a pivot is.
  */
@@ -152,7 +171,7 @@ det[T: Scalar](a: MatrixView[T]) -> Result[T, Error]
     for i in 0..<a.rows
         val d = f.at(i, i)
 
-        acc = acc * (if ipiv[i] != int(i + 1) then -d else d)
+        acc = product(acc, if ipiv[i] != int(i + 1) then -d else d)
 
     Ok(acc)
 

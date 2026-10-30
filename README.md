@@ -22,7 +22,7 @@ print(svdvals(m).unwrap())                          // the same two, descending
 
 ```
 dependencies {
-  lapack { git = "github.com/sysl-lang/lapack", version = "0.1.0" }
+  lapack { git = "github.com/sysl-lang/lapack", version = "0.1.1" }
 }
 ```
 
