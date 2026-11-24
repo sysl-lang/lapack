@@ -4,14 +4,14 @@
 // This is the block a consumer writes to reach it:
 //
 //     dependencies {
-//       lapack { git = "github.com/sysl-lang/lapack", version = "0.1.1" }
+//       lapack { git = "github.com/sysl-lang/lapack", version = "0.1.2" }
 //     }
 //
 // The coordinate names the package, `lapack`; the module a program imports is `sh.sysl.lapack`.
 
 package {
   name    = "lapack"
-  version = "0.1.1"
+  version = "0.1.2"
 
   // The compiler this was written and tested against.
   sysl = "0.8.2"
@@ -27,7 +27,7 @@ requires {
 // **`blas` supplies the matrix view and the element types**: `MatrixView[T]` is the one column-major
 // view both packages read, and `Element` is the trait `Scalar` extends.
 dependencies {
-  blas { git = "github.com/sysl-lang/blas", version = "0.1.0" }
+  blas { git = "github.com/sysl-lang/blas", version = "0.1.2" }
 }
 
 // **Which LAPACK answers is chosen as `blas` chooses its BLAS, by the same two features, and each
